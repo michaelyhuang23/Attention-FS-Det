@@ -1,19 +1,6 @@
-# Few-Shot Object Detection (FsDet)
-[![Language grade: Python](https://img.shields.io/lgtm/grade/python/g/ucbdrive/few-shot-object-detection.svg?logo=lgtm&logoWidth=18)](https://lgtm.com/projects/g/ucbdrive/few-shot-object-detection/context:python)
-[![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)](https://github.com/psf/black)
-[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
+# Attention-Based Meta Few-Shot Object Detection
 
-FsDet contains the official few-shot object detection implementation of the ICML 2020 paper
-[Frustratingly Simple Few-Shot Object Detection](https://arxiv.org/abs/2003.06957).
-![TFA Figure](https://user-images.githubusercontent.com/7898443/76520006-698cc200-6438-11ea-864f-fd30b3d50cea.png)
-
-In addition to the benchmarks used by previous works, we introduce new benchmarks on three datasets: PASCAL VOC, COCO, and LVIS. We sample multiple groups of few-shot training examples for multiple runs of the experiments and report evaluation results on both the base classes and the novel classes. These are described in more detail in [Data Preparation](#data-preparation).
-
-We also provide benchmark results and pre-trained models for our two-stage fine-tuning approach (TFA). In TFA, we first train the entire object detector on the data-abundant base classes, and then only fine-tune the last layers of the detector on a small balanced training set. See [Models](#models) for our provided models and [Getting Started](#getting-started) for instructions on training and evaluation.
-
-FsDet is well-modularized so you can easily add your own datasets and models. The goal of this repository is to provide a general framework for few-shot object detection that can be used for future research.
-
-If you find this repository useful for your publications, please consider citing our paper.
+This repository is based on "Frustratingly Simple Few-Shot Object Detection"
 
 ```angular2html
 @article{wang2020few,
@@ -121,8 +108,8 @@ We provide a set of benchmark results and pre-trained models available for downl
 ### Inference Demo with Pre-trained Models
 
 1. Pick a model and its config file from
-  [model zoo](fsdet/model_zoo/model_zoo.py),
-  for example, `COCO-detection/faster_rcnn_R_101_FPN_ft_all_1shot.yaml`.
+    [model zoo](fsdet/model_zoo/model_zoo.py),
+    for example, `COCO-detection/faster_rcnn_R_101_FPN_ft_all_1shot.yaml`.
 2. We provide `demo.py` that is able to run builtin standard models. Run it with:
 ```
 python3 -m demo.demo --config-file configs/COCO-detection/faster_rcnn_R_101_FPN_ft_all_1shot.yaml \
