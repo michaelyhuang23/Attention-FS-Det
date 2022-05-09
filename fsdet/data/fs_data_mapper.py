@@ -146,73 +146,25 @@ class DatasetMapperWithSupport:
         return self.generate_support(chosen_cls, self.support_shot, forbidden_imgs)
 
     def generate_support(self, chosen_cls, shots, forbidden_imgs):
-        self.support_dataset # loop through it to find instances (remember the first order is images)
+        """
+        generate list of support images, support boxes, and support classes.
+        the length of the list is = shots
+        images are not guaranteed the same shape but is in (C, H, W) format
+        """
+        # loop through self.support_dataset to find instances (remember the first order is images)
+        support_images, support_cls, support_bboxes = [], [], []
+        for img_dict in random.sample(self.support_dataset,len(self.support_dataset)):
+            if img_dict['image_id'] in forbidden_imgs : continue
+            class_annos = [anno for anno in img_dict['annotations'] if anno['category_id'] == chosen_cls]
+            if len(class_annos) == 0 : continue
+            forbidden_imgs.append(img_dict['image_id'])
+            image = utils.read_image(img_dict['file_name'], format=self.img_format)
+            image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
+            if shots - len(support_images) < len(class_annos):
+                class_annos = random.sample(class_annos, shots - len(support_images))
+            for anno in class_annos:
+                support_images.append(image)
+                support_bboxes.append(anno['bbox'])
+                support_cls.append(anno['category_id'])
+        return support_images, support_bboxes, support_cls
 
-    def generate_support(self, chosen_cls, shots, forbidden_imgs):
-        
-        query_cls = self.support_df.loc[self.support_df['id']==id, 'category_id'].tolist()[0] # they share the same category_id and image_id
-        query_img = self.support_df.loc[self.support_df['id']==id, 'image_id'].tolist()[0]
-        all_cls = self.support_df.loc[self.support_df['image_id']==query_img, 'category_id'].tolist()
-
-        # Crop support data and get new support box in the support data
-        support_data_all = np.zeros((support_way * support_shot, 3, 320, 320), dtype = np.float32)
-        support_box_all = np.zeros((support_way * support_shot, 4), dtype = np.float32)
-        used_image_id = [query_img]
-
-        used_id_ls = []
-        for item in dataset_dict['annotations']:
-            used_id_ls.append(item['id'])
-        #used_category_id = [query_cls]
-        used_category_id = list(set(all_cls))
-        support_category_id = []
-        mixup_i = 0
-
-        for shot in range(support_shot):
-            # Support image and box
-            support_id = self.support_df.loc[(self.support_df['category_id'] == query_cls) & (~self.support_df['image_id'].isin(used_image_id)) & (~self.support_df['id'].isin(used_id_ls)), 'id'].sample(random_state=id).tolist()[0]
-            support_cls = self.support_df.loc[self.support_df['id'] == support_id, 'category_id'].tolist()[0]
-            support_img = self.support_df.loc[self.support_df['id'] == support_id, 'image_id'].tolist()[0]
-            used_id_ls.append(support_id) 
-            used_image_id.append(support_img)
-
-            support_db = self.support_df.loc[self.support_df['id'] == support_id, :]
-            assert support_db['id'].values[0] == support_id
-            
-            support_data = utils.read_image('./datasets/coco/' + support_db["file_path"].tolist()[0], format=self.img_format)
-            support_data = torch.as_tensor(np.ascontiguousarray(support_data.transpose(2, 0, 1)))
-            support_box = support_db['support_box'].tolist()[0]
-            #print(support_data)
-            support_data_all[mixup_i] = support_data
-            support_box_all[mixup_i] = support_box
-            support_category_id.append(0) #support_cls)
-            mixup_i += 1
-
-        if support_way == 1:
-            pass
-        else:
-            for way in range(support_way-1):
-                other_cls = self.support_df.loc[(~self.support_df['category_id'].isin(used_category_id)), 'category_id'].drop_duplicates().sample(random_state=id).tolist()[0]
-                used_category_id.append(other_cls)
-                for shot in range(support_shot):
-                    # Support image and box
-
-                    support_id = self.support_df.loc[(self.support_df['category_id'] == other_cls) & (~self.support_df['image_id'].isin(used_image_id)) & (~self.support_df['id'].isin(used_id_ls)), 'id'].sample(random_state=id).tolist()[0]
-                     
-                    support_cls = self.support_df.loc[self.support_df['id'] == support_id, 'category_id'].tolist()[0]
-                    support_img = self.support_df.loc[self.support_df['id'] == support_id, 'image_id'].tolist()[0]
-
-                    used_id_ls.append(support_id) 
-                    used_image_id.append(support_img)
-
-                    support_db = self.support_df.loc[self.support_df['id'] == support_id, :]
-                    assert support_db['id'].values[0] == support_id
-
-                    support_data = utils.read_image('./datasets/coco/' + support_db["file_path"].tolist()[0], format=self.img_format)
-                    support_data = torch.as_tensor(np.ascontiguousarray(support_data.transpose(2, 0, 1)))
-                    support_box = support_db['support_box'].tolist()[0]
-                    support_data_all[mixup_i] = support_data
-                    support_box_all[mixup_i] = support_box
-                    support_category_id.append(1) #support_cls)
-                    mixup_i += 1
-        
-        return support_data_all, support_box_all, support_category_id
