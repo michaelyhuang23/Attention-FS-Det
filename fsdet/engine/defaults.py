@@ -490,7 +490,7 @@ class DefaultTrainer(SimpleTrainer):
         It now calls :func:`fsdet.data.build_detection_train_loader`.
         Overwrite it if you'd like a different data loader.
         """
-        mapper = DatasetMapperWithSupport(cfg)
+        mapper = DatasetMapperWithSupport(cfg, cfg.DATASETS.TRAIN)
         return build_detection_train_loader(cfg, mapper)
 
     @classmethod

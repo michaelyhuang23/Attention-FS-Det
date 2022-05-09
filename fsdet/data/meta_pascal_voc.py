@@ -142,6 +142,7 @@ def register_meta_pascal_voc(
     elif keepclasses.startswith("novel"):
         thing_classes = metadata["novel_classes"][sid]
 
+    print(f"registering dataset: {name}")
     DatasetCatalog.register(
         name,
         lambda: load_filtered_voc_instances(

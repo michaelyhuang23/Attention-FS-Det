@@ -31,7 +31,7 @@ def generate_seeds(args):
             fileids = np.loadtxt(f, dtype=np.str).tolist()
         data.extend(fileids)
     for fileid in data:
-        year = "2012" if "_" in fileid else "2007"
+        year = "2012" if "_" in fileid else "2007"  # 07 id is an index, 12 id is the date
         dirname = os.path.join("datasets", "VOC{}".format(year))
         anno_file = os.path.join(dirname, "Annotations", fileid + ".xml")
         tree = ET.parse(anno_file)
