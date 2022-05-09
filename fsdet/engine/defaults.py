@@ -38,6 +38,7 @@ from fsdet.evaluation import (
     verify_results,
 )
 from fsdet.modeling import build_model
+from fsdet.data.fs_data_mapper import DatasetMapperWithSupport
 from fsdet.utils.file_io import PathManager
 from fvcore.nn.precise_bn import get_bn_modules
 from torch.nn.parallel import DistributedDataParallel
@@ -489,7 +490,8 @@ class DefaultTrainer(SimpleTrainer):
         It now calls :func:`fsdet.data.build_detection_train_loader`.
         Overwrite it if you'd like a different data loader.
         """
-        return build_detection_train_loader(cfg)
+        mapper = DatasetMapperWithSupport(cfg)
+        return build_detection_train_loader(cfg, mapper)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):

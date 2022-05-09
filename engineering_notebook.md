@@ -1,0 +1,4 @@
+# Engineering Notebook
+
+### May 8
+I've read through the codebase of FewX and compared it with TFA's FS-Det and Detectron2. What turns out happening is that FewX rewrote a certain chunk of the data-loading code which TFA simply took from Detectron2. In particular, FewX has a custom SupportDatasetMapper, which loads in the support information/images from the start so that during training, it simply samples a support image for each of the query image. This is obviously easily extensible to a Two-Way Contrastive Training strategy. I think that's what I would do except I would possibly store the support information in a more json format
