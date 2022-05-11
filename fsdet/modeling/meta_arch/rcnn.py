@@ -74,6 +74,9 @@ class GeneralizedRCNN(nn.Module):
 
                 * image: Tensor, image in (C, H, W) format.
                 * instances (optional): groundtruth :class:`Instances`
+                * support_images (optional): support images associated with this query (when training)
+                * support_boxes (optional): support boxes associated with this query (when training)
+                * support_cls (optional): support classes associated with this query (when training)
                 * proposals (optional): :class:`Instances`, precomputed proposals.
 
                 Other information that's included in the original dicts, such as:

@@ -126,8 +126,6 @@ class DatasetMapperWithSupport:
                 annos, image_shape
             )
             # Create a tight bounding box from masks, useful when image is cropped
-            if self.crop_gen and instances.has("gt_masks"):
-                instances.gt_boxes = instances.gt_masks.get_bounding_boxes()
             dataset_dict["instances"] = utils.filter_empty_instances(instances)
 
         return dataset_dict
