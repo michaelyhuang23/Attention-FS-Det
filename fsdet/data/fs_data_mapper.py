@@ -7,12 +7,14 @@ import logging
 import random
 import numpy as np
 import torch
+import cv2
 from fvcore.common.file_io import PathManager
 from PIL import Image
 
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
 from detectron2.data import get_detection_dataset_dicts
+from detectron2.structures import BoxMode
 
 import pandas as pd
 from detectron2.data.catalog import MetadataCatalog
@@ -47,6 +49,9 @@ class DatasetMapperWithSupport:
         self.support_way    = cfg.INPUT.FS.SUPPORT_WAY
         self.support_shot   = cfg.INPUT.FS.SUPPORT_SHOT
         self.support_file   = cfg.INPUT.FS.SUPPORT_FILE
+        self.max_obj_size   = cfg.INPUT.FS.MAX_SUPPORT_OBJ_SIZE
+
+        if self.max_obj_size == 0 : self.max_obj_size = 320
 
         assert(self.support_way == 1 or self.support_way == 2)
 
@@ -156,13 +161,42 @@ class DatasetMapperWithSupport:
             class_annos = [anno for anno in img_dict['annotations'] if anno['category_id'] == chosen_cls]
             if len(class_annos) == 0 : continue
             forbidden_imgs.append(img_dict['image_id'])
-            image = utils.read_image(img_dict['file_name'], format=self.img_format)
-            image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
+            image_orig = utils.read_image(img_dict['file_name'], format=self.img_format)
             if shots - len(support_images) < len(class_annos):
                 class_annos = random.sample(class_annos, shots - len(support_images))
             for anno in class_annos:
+                image = self.crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
+                image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
                 support_images.append(image)
                 support_bboxes.append(anno['bbox'])
                 support_cls.append(anno['category_id'])
         return support_images, support_bboxes, support_cls
+
+    def crop_resize_obj(self, image, box, box_mode, max_size):
+        if box_mode == BoxMode.XYXY_ABS:
+            W = max(1, box[2] - box[0])
+            H = max(1, box[3] - box[1])
+            x1, y1, x2, y2 = box
+        elif box_mode == BoxMode.XYWH_ABS:
+            W = max(1, box[2])
+            H = max(1, box[3])
+            x1, y1, x2, y2 = box[0], box[1], box[0]+box[2]-1, box[1]+box[3]-1
+        else: 
+            raise ValueError("wrong box mode")
+
+        assert(image.shape[0] >= y2 and image.shape[1] >= x2)
+        
+        x2 = min(image.shape[1]-1, x2)
+        y2 = min(image.shape[0]-1, y2)
+
+        assert(x2 >= x1 and y2 >= y1)
+
+        ratio = max_size / float(max(W,H))
+        image = image[y1 : y2+1, x1 : y2+1]
+        # W and H
+        target_size = (round(W*ratio), round(H*ratio))
+
+        assert(target_size[0] == max_size or target_size[1] == max_size)
+
+        return cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR)
 

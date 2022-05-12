@@ -35,6 +35,10 @@ class GeneralizedRCNN(nn.Module):
         )
         self.roi_heads = build_roi_heads(cfg, self.backbone.output_shape())
 
+        self.support_way = cfg.INPUT.FS.SUPPORT_WAY
+        self.support_shot = cfg.INPUT.FS.SUPPORT_SHOT
+        self.support_layer = cfg.MODEL.FPN.SUPPORT_LAYER
+
         assert len(cfg.MODEL.PIXEL_MEAN) == len(cfg.MODEL.PIXEL_STD)
         num_channels = len(cfg.MODEL.PIXEL_MEAN)
         pixel_mean = (
@@ -95,23 +99,22 @@ class GeneralizedRCNN(nn.Module):
             return self.inference(batched_inputs)
 
         images = self.preprocess_image(batched_inputs)
+
         if "instances" in batched_inputs[0]:
             gt_instances = [
                 x["instances"].to(self.device) for x in batched_inputs
             ]
         elif "targets" in batched_inputs[0]:
-            log_first_n(
-                logging.WARN,
-                "'targets' in the model inputs is now renamed to 'instances'!",
-                n=10,
-            )
-            gt_instances = [
-                x["targets"].to(self.device) for x in batched_inputs
-            ]
+            raise ValueError("Key 'target' is obsolete")
         else:
             gt_instances = None
 
         features = self.backbone(images.tensor)
+        print(features.shape)
+
+        pos_supports = self.process_supports(batched_inputs, "support_pos_images")
+        neg_supports = self.process_supports(batched_inputs, "support_neg_images")
+        # shape: (B, N, C, H, W)
 
         if self.proposal_generator:
             proposals, proposal_losses = self.proposal_generator(
@@ -156,7 +159,8 @@ class GeneralizedRCNN(nn.Module):
 
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
-
+        print(features.keys())
+        print({key:val.shape for key,val in features.items()})
         if detected_instances is None:
             if self.proposal_generator:
                 proposals, _ = self.proposal_generator(images, features, None)
@@ -187,6 +191,30 @@ class GeneralizedRCNN(nn.Module):
             return processed_results
         else:
             return results
+
+
+    def process_supports(self, batched_inputs, img_key : str):
+        support_images = self.preprocess_support_image(batched_inputs, img_key)
+
+        B, N, C, H, W = support_images.tensor.shape
+        assert N == self.support_way * self.support_shot
+
+        support_images = support_images.tensor.reshape(B*N, C, H, W)
+        # it's fine to turn it into a tensor because all the support images already have the max_size aligned
+        # so it's likely that the resulting H, W is close to what a square image would give
+        support_features = self.backbone(support_images)[self.support_layer]
+        Lf, Cf, Hf, Wf = support_features.shape
+
+        assert Lf == B*N
+        return support_features.reshape(B, N, Cf, Hf, Wf)
+
+
+    def preprocess_support_image(self, batched_inputs, img_key : str):
+        support_images = [[self.normalizer(img.to(self.device)) for img in x[img_key]] for x in batched_inputs]
+        support_images = [ImageList.from_tensors(imgs, self.backbone.size_divisibility).tensor for imgs in support_images]
+        support_images = ImageList.from_tensors(support_images, self.backbone.size_divisibility)
+        return support_images
+
 
     def preprocess_image(self, batched_inputs):
         """
@@ -230,11 +258,8 @@ class ProposalNetwork(nn.Module):
                 The dict contains one key "proposals" whose value is a
                 :class:`Instances` with keys "proposal_boxes" and "objectness_logits".
         """
-        images = [x["image"].to(self.device) for x in batched_inputs]
-        images = [self.normalizer(x) for x in images]
-        images = ImageList.from_tensors(
-            images, self.backbone.size_divisibility
-        )
+
+        images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
 
         if "instances" in batched_inputs[0]:
@@ -269,3 +294,14 @@ class ProposalNetwork(nn.Module):
             r = detector_postprocess(results_per_image, height, width)
             processed_results.append({"proposals": r})
         return processed_results
+
+    def preprocess_image(self, batched_inputs):
+        """
+        Normalize, pad and batch the input images.
+        """
+        images = [x["image"].to(self.device) for x in batched_inputs]
+        images = [self.normalizer(x) for x in images]
+        images = ImageList.from_tensors(
+            images, self.backbone.size_divisibility
+        )
+        return images
