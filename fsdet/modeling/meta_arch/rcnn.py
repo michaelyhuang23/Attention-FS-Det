@@ -43,6 +43,13 @@ class GeneralizedRCNN(nn.Module):
         self.support_way = cfg.INPUT.FS.SUPPORT_WAY
         self.support_shot = cfg.INPUT.FS.SUPPORT_SHOT
         self.support_layer = cfg.MODEL.FPN.SUPPORT_LAYER
+        self.attn_size = cfg.MODEL.ATTENTION.INNER_SIZE
+        self.self_attn_weight = cfg.MODEL.ATTENTION.SELF_ATTENTION_WEIGHT
+
+        self.conv_support = nn.Conv2d(self.backbone.output_shape()[self.support_layer], self.attn_size, kernel_size=1, bias=False)
+        self.conv_query = nn.Conv2d(self.backbone.output_shape()[self.support_layer], self.attn_size, kernel_size=1, bias=False)
+        self.conv_self_support_attn = nn.Conv2d(self.backbone.output_shape()[self.support_layer], 1, kernel_size=1, bias=False)
+        # maybe one is enough?
 
         assert len(cfg.MODEL.PIXEL_MEAN) == len(cfg.MODEL.PIXEL_STD)
         num_channels = len(cfg.MODEL.PIXEL_MEAN)
@@ -57,6 +64,9 @@ class GeneralizedRCNN(nn.Module):
             .view(num_channels, 1, 1)
         )
         self.normalizer = lambda x: (x - pixel_mean) / pixel_std
+
+
+
         self.to(self.device)
 
         if cfg.MODEL.BACKBONE.FREEZE:
@@ -73,6 +83,44 @@ class GeneralizedRCNN(nn.Module):
             for p in self.roi_heads.box_head.parameters():
                 p.requires_grad = False
             print("froze roi_box_head parameters")
+
+    def cross_attention(self, batched_features, batched_supports):
+        batched_features_tr = self.conv_query(batched_features)
+        all_support_ft = []
+
+        for features_tr, supports in zip(batched_features_tr, batched_supports):
+            supports_s = torch.squeeze(self.conv_self_support_attn(supports))
+            # self_supports shape: (N, H, W)
+            supports_s = torch.permute(supports_s, (1,2,0))[None,None,...]
+
+            # supports shape: (N, C, H, W)
+            supports_k = self.conv_support(supports)
+            supports_k = torch.permute(supports_k, (1,2,3,0))
+            # supports_k shape: (C', H, W, N)
+
+            # features_tr shape: (C', H, W)
+            features_tr = torch.permute(features_tr, (1,2,0))
+            # features_tr shape: (H, W, C')
+            CAtt = torch.mul(features_tr-torch.mean(features_tr), supports_k-torch.mean(supports_k))
+            # CAtt shape: (Hq, Wq, Hs, Ws, Ns)
+            CAtt += supports_s * self.self_attn_weight
+            CAtt = torch.sigmoid(CAtt)
+
+            CAtt = torch.reshape(CAtt, (CAtt.shape[0], CAtt.shape[1], -1))
+            # CAtt shape: (Hq, Wq, L)
+            supports = torch.permute(supports, (0,2,3,1))
+            # supports shape: (H, W, N, C)
+            supports = torch.reshape(supports, (-1, supports.shape[-1]))
+            # supports shape: (L, C)
+
+            support_ft = torch.mul(CAtt, supports)
+            # support_ft shape: (Hq, Wq, C)
+            support_ft = torch.permute(support_ft, (0, 1, 2))
+            all_support_ft.append(support_ft)
+
+        batched_support_ft = torch.stack(all_support_ft, axis=0)
+        # batched_support_ft shape: (B, C, Hq, Wq)
+        return batched_support_ft
 
     def forward(self, batched_inputs):
         """
@@ -122,16 +170,27 @@ class GeneralizedRCNN(nn.Module):
         neg_supports = self.process_supports(batched_inputs, "support_neg_images")
         # shape: (B, N, C, H, W)
 
-        supports = pos_supports
+        pos_supports_fts = self.cross_attention(features, pos_supports)
+        neg_supports_fts = self.cross_attention(features, neg_supports)
+        # shape: (B, C, H, W)
 
-        supports = torch.permute(supports, (2,3,4,1,0))
-        # shape: (C, H, W, N, B)
+        pos_features = torch.cat([features, pos_supports_fts])
+        neg_features = torch.cat([features, neg_supports_fts])
+        
+        pos_proposals, pos_proposal_loss = self.rpn_forward(images, pos_features, gt_instances, batched_inputs)
+        neg_proposals, neg_proposal_loss = self.rpn_forward(images, neg_features, gt_instances, batched_inputs)
 
-        features_tr = torch.permute(features, (0,2,3,1))
-        # shape: (B, H, W, C)
 
-        CAtt = torch.mul(features_tr, supports)
+        _, detector_losses = self.roi_heads(
+            images, features, proposals, gt_instances
+        )
 
+        losses = {}
+        losses.update(detector_losses)
+        losses.update(proposal_losses)
+        return losses
+
+    def rpn_forward(self, images, features, gt_instances, batched_inputs):
         if self.proposal_generator:
             proposals, proposal_losses = self.proposal_generator(
                 images, features, gt_instances
@@ -143,14 +202,7 @@ class GeneralizedRCNN(nn.Module):
             ]
             proposal_losses = {}
 
-        _, detector_losses = self.roi_heads(
-            images, features, proposals, gt_instances
-        )
-
-        losses = {}
-        losses.update(detector_losses)
-        losses.update(proposal_losses)
-        return losses
+        return proposals, proposal_losses
 
     def init_model(self, fs_inputs):
         """
