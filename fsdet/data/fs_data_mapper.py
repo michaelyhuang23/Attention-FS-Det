@@ -91,12 +91,14 @@ class DatasetMapperWithSupport:
                 if not self.keypoint_on:
                     anno.pop("keypoints", None)
 
+        pos_cls, neg_cls = -1, -1
         if self.is_train:
             # create positive support
             support_pos_images, support_pos_bboxes, support_pos_cls = self.generate_positive_support(dataset_dict)
             dataset_dict['support_pos_images'] = support_pos_images
             dataset_dict['support_pos_bboxes'] = support_pos_bboxes
             dataset_dict['support_pos_cls'] = support_pos_cls
+            pos_cls = support_pos_cls[0]
 
             if self.support_way == 2:
                 # create negative support
@@ -104,6 +106,7 @@ class DatasetMapperWithSupport:
                 dataset_dict['support_neg_images'] = support_neg_images
                 dataset_dict['support_neg_bboxes'] = support_neg_bboxes
                 dataset_dict['support_neg_cls'] = support_neg_cls
+                neg_cls = support_neg_cls[0]
 
 
         image_shape = image.shape[:2]  # h, w
@@ -120,18 +123,31 @@ class DatasetMapperWithSupport:
         if "annotations" in dataset_dict:
             
             # USER: Implement additional transformations if you have other types of data
-            annos = [
+            pos_annos = [
                 utils.transform_instance_annotations(
                     obj, transforms, image_shape
                 )
                 for obj in dataset_dict.pop("annotations")
-                if obj.get("iscrowd", 0) == 0
+                if obj.get("iscrowd", 0) == 0 and obj.get("category_id") == pos_cls
             ]
-            instances = utils.annotations_to_instances(
-                annos, image_shape
+            pos_instances = utils.annotations_to_instances(
+                pos_annos, image_shape
             )
             # Create a tight bounding box from masks, useful when image is cropped
-            dataset_dict["instances"] = utils.filter_empty_instances(instances)
+            dataset_dict["pos_instances"] = utils.filter_empty_instances(pos_instances)
+
+            neg_annos = [
+                utils.transform_instance_annotations(
+                    obj, transforms, image_shape
+                )
+                for obj in dataset_dict.pop("annotations")
+                if obj.get("iscrowd", 0) == 0 and obj.get("category_id") == neg_cls
+            ]
+            neg_instances = utils.annotations_to_instances(
+                neg_annos, image_shape
+            )
+            # Create a tight bounding box from masks, useful when image is cropped
+            dataset_dict["neg_instances"] = utils.filter_empty_instances(neg_instances)
 
         return dataset_dict
 
@@ -169,6 +185,7 @@ class DatasetMapperWithSupport:
                 image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
                 support_images.append(image)
                 support_bboxes.append(anno['bbox'])
+                assert anno['category_id'] == chosen_cls
                 support_cls.append(anno['category_id'])
         return support_images, support_bboxes, support_cls
 

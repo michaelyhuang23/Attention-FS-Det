@@ -153,14 +153,19 @@ class GeneralizedRCNN(nn.Module):
 
         images = self.preprocess_image(batched_inputs)
 
-        if "instances" in batched_inputs[0]:
-            gt_instances = [
+        if "pos_instances" in batched_inputs[0]:
+            pos_gt_instances = [
                 x["instances"].to(self.device) for x in batched_inputs
             ]
-        elif "targets" in batched_inputs[0]:
-            raise ValueError("Key 'target' is obsolete")
         else:
-            gt_instances = None
+            pos_gt_instances = None
+
+        if "neg_instances" in batched_inputs[0]:
+            neg_gt_instances = [
+                x["instances"].to(self.device) for x in batched_inputs
+            ]
+        else:
+            neg_gt_instances = None
 
         features = self.backbone(images.tensor)
         print(features.shape)
@@ -177,12 +182,12 @@ class GeneralizedRCNN(nn.Module):
         pos_features = torch.cat([features, pos_supports_fts])
         neg_features = torch.cat([features, neg_supports_fts])
         
-        pos_proposals, pos_proposal_loss = self.rpn_forward(images, pos_features, gt_instances, batched_inputs)
-        neg_proposals, neg_proposal_loss = self.rpn_forward(images, neg_features, gt_instances, batched_inputs)
+        pos_proposals, pos_proposal_loss = self.rpn_forward(images, pos_features, pos_gt_instances, batched_inputs)
+        neg_proposals, neg_proposal_loss = self.rpn_forward(images, neg_features, neg_gt_instances, batched_inputs)
 
 
-        _, detector_losses = self.roi_heads(
-            images, features, proposals, gt_instances
+        _, pos_detector_losses = self.roi_heads(
+            images, features, pos_proposals, pos_gt_instances
         )
 
         losses = {}
