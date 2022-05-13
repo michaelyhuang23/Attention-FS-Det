@@ -1,20 +1,38 @@
 # Engineering Notebook
 
-### May 8
-
+### May 4 Thursday
+Today I reviewed the repository for TFA relatively extensively. And then I looked at FSOD's implementation in Detectron2. I also briefly reviewed the DANA's implementation in MetaRCNN. Now I'm torn between which repository/framework to use. 
+1. The **DANA implementation** is fairly self-contained and readable as far as I can see, since all the code is written in native PyTorch with little outside dependencies (no detectron2). However, the codes are not commented. And it's rather messy, and thus could render some deep surgery into the model rather difficult. Further, the evaluation protocol is certainly inferior to Detectron2-based repos. 
+2. **TFA's implementation** is well structured, as Detectron2-based repos are. However, this repo is for the case when the model is a simple FasterRCNN, with external add-ons and no support class. Modifying the repo to support the support-classes maybe a nontrivial surgery into the repo. The best part of the repo is its completeness of evaluation protocols for COCO as well as Pascal VOC. It is noteworthy that we also need to reimplement data processing part of meta-learning.
+3. **FSOD's implementation** in Detectron2 is similar to TFA but not quite. It's a proof that Detectron2 can be used to build meta-learning based models. However, some structure of the code maybe FSOD-specific (since so they are named). The dataset part is more obscure compared with TFA, still fairing better than DANA. The good thing is the meta-learning part of the processing is in-built. Evaluation code is also messier. 
+My current lean is towards FSOD, since its model has a similar structure as mine.
+### May 8 Sunday
 ##### Morning
-
 I've read through the codebase of FewX and compared it with TFA's FS-Det and Detectron2. What turns out happening is that FewX rewrote a certain chunk of the data-loading code which TFA simply took from Detectron2. In particular, FewX has a custom SupportDatasetMapper, which loads in the support information/images from the start so that during training, it simply samples a support image for each of the query image. This is obviously easily extensible to a Two-Way Contrastive Training strategy. FewX implements Two-Way Contrastive Training by selecting a class from the query image to be **the class**. Then selecting a positive support of the same class. Then, selecting a negative support of a class that **does not exist** in the query image. The gt_boxes of query can be filtered at anytime, it doesn't matter. I think that's what I would do except I would possibly store the support information in a more json format.
-
 ##### Evening
-
 I've read through the inference part of the codebase of FewX. It turns out that for dataloading of the training, FewX just loads a Pandas Dataframe in using a DatasetMapper and then randomly pool support images for each of the query (all gt_boxes of the same class in the query is used when judging foreground to background in the RPN). For inference, FewX loads into the model via a `model_init` function the support images and then preprocess their features. These support images is stored in a 10-shot Pandas Dataframe with the same structure as all the other supports (which is in a separate dataframe). The query is compared to the average of each support class's images.
-
 ### May 9
-
 ##### Early Morning
-
 I read through the dataloading portion and some modeling portion of TFA's FS-Det, which I shall call FS-Det henceforth. Again, FS-Det is finetuning based so there's no support-class messiness. The Pascal few shot splits are stored simply as a `.txt` file recording several images/xml labels that contain the corresponding class. Inside the data-loading code (at the registration of the dataset), we load in 10 instances (for 10-shot) for each few shot class from a certain split. Each split is registered as a different dataset. The way we load in 10 instances is to separate the consideration of instance from image (so a couple instances can be from the same image, different from FewX's training sampling). For each image we consider (there may be repeats), we only retain the bounding box for one instance. This is all done in the dataset level, without any surgery on the DatasetMapper level because the format is the standard one. So how doesn't only considering one instance affect the training? The reason is because FS-Det doesn't finetune the RPN, so the lack of other instances/boxes will not discourage the RPN from recognizing them. Each proposal output from the RPN **during training** is necessarily a **foreground** associated with a gt_box (backgrounds are thrown away). So, our instance also only affects the RoI head's learning on that instance and not others. Thus this is a valid structure for the purpose of FS-Det. 
-
 The problem with FS-Det's dataloading is two-folded. 1. it doesn't load support classes; 2. it doesn't load all instances of the support class from a query image, which is required for the RPN.
+##### Afternoon
+The decision has been made to follow through with FS-Det. I've begun and finished the dataloading part of the support dataset during training.
+We must separate the discussion of the training pipeline from the inference pipeline.
+**Training pipeline:**
+1. _Dataset Loader_ loads in the normal pascal voc dataset
+2. _Dataset Mapper_ is initialized with the train dataset. At mapping, given an input query, it samples 2N supports (for N-way), with N belonging to the same class as query and the other N belonging to another class. Dataset mapper then outputs each of these support instances' image, box, and label
+3. _Model_ receives an input of an image within which we have many instances. Each insttance contain a list of support instances that are not in the same image
+ The training pipeline is complete. I envision to the inference pipeline to be something of the nature below, based on how FewX does it.
+ **Inference pipeline:**
+ 1. _Dataset Loader_ loads a set of inference images
+ 2. _Dataset Mapper_ is default behavior
+ 3. _Model_ is initialized with our given support set, which is loaded in from the dataset loader and not sampled as in during training. 
+It might be difficult to _initialize model_ when we don't have the complete model architecture yet. So, I'm to work on that in parallel with the model initialization. 
+### May 11
+##### Afternoon
+I'm in the process of designing the model for the support branch. The current issue is: if we run the backbone before cropping out the RoI, we run the risk of excluding features in certain locations because the output grain-size is quite large --> up to 20 by 20. In the DANA paper, they just give up on the scale issue and select a feature map of 20 by 20. This is suboptimal. It may be better to select 1 scale for support and use FPN for query. If we maintain the object's size at around 320 by 320, the output size of the object would be 20 by 20, on which scale I do believe a cropping may work effectively.
+##### Evening
+The cropping turns out harder than expected because we store the support images as ImageList format. When it's a 2D image list, the cropping becomes a technical challenge that we don't have time for right now. So, I've turned the 2D image list into a tensor by ensuring that each support is indeed just a close-to square image as described by DANA.
+##### Night
+Two more difficulties arose: 1. in the training, we need to remove all bbox from the annotation besides the relevant class for correct foreground background computation. 2. in the evaluation/testing, we need a data loading system that loads in the support class few shot dataset (instead of sampling it on the fly). We also need a "normal" data loading code to load the query images. 
 

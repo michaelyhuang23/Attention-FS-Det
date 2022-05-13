@@ -1,4 +1,5 @@
 from detectron2.config.defaults import _C
+from detectron2.config import CfgNode as CN
 
 # adding additional default values built on top of the default values in detectron2
 
@@ -16,3 +17,9 @@ _CC.MODEL.ROI_HEADS.COSINE_SCALE = 20.0
 
 # Backward Compatible options.
 _CC.MUTE_HEADER = True
+
+_CC.MODEL.FPN.SUPPORT_LAYER = "res5"
+
+_CC.INPUT.FS = CN()
+_CC.INPUT.FS.SUPPORT_WAY = 1
+_CC.INPUT.FS.SUPPORT_SHOT = 1

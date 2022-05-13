@@ -7,6 +7,7 @@ MODEL:
     OUT_FEATURES: ["res4", "res5"] #["res2", "res3", "res4", "res5"]
   FPN:
     IN_FEATURES: ["res4", "res5"] #["res2", "res3", "res4", "res5"]
+    SUPPORT_LAYER: "res5"
   ANCHOR_GENERATOR:
     SIZES: [[128], [256], [512]] #[[32], [64], [128], [256], [512]]  # One size for each in feature map
     ASPECT_RATIOS: [[0.5, 1.0, 2.0]]  # Three aspect ratios (same for all in feature maps)
@@ -36,3 +37,7 @@ SOLVER:
   MAX_ITER: 90000
 INPUT:
   MIN_SIZE_TRAIN: (640, 672, 704, 736, 768, 800)
+  FS:
+    SUPPORT_WAY: 2
+    SUPPORT_SHOT: 2
+

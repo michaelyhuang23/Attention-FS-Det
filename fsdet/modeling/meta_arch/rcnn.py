@@ -1,4 +1,5 @@
 import logging
+import copy
 
 import torch
 from detectron2.modeling.backbone import build_backbone
@@ -30,8 +31,12 @@ class GeneralizedRCNN(nn.Module):
 
         self.device = torch.device(cfg.MODEL.DEVICE)
         self.backbone = build_backbone(cfg)
+        print(self.backbone.output_shape().items())
+        input_shape = copy.deepcopy(self.backbone.output_shape())
+        for val in input_shape.values():
+            val.channels *= 2
         self.proposal_generator = build_proposal_generator(
-            cfg, self.backbone.output_shape()
+            cfg, input_shape
         )
         self.roi_heads = build_roi_heads(cfg, self.backbone.output_shape())
 
@@ -111,10 +116,21 @@ class GeneralizedRCNN(nn.Module):
 
         features = self.backbone(images.tensor)
         print(features.shape)
+        # shape: (B, C, H, W)
 
         pos_supports = self.process_supports(batched_inputs, "support_pos_images")
         neg_supports = self.process_supports(batched_inputs, "support_neg_images")
         # shape: (B, N, C, H, W)
+
+        supports = pos_supports
+
+        supports = torch.permute(supports, (2,3,4,1,0))
+        # shape: (C, H, W, N, B)
+
+        features_tr = torch.permute(features, (0,2,3,1))
+        # shape: (B, H, W, C)
+
+        CAtt = torch.mul(features_tr, supports)
 
         if self.proposal_generator:
             proposals, proposal_losses = self.proposal_generator(
@@ -135,6 +151,12 @@ class GeneralizedRCNN(nn.Module):
         losses.update(detector_losses)
         losses.update(proposal_losses)
         return losses
+
+    def init_model(self, fs_inputs):
+        """
+        fs_input is a list of dict --- outputs of DatasetMapper
+        
+        """
 
     def inference(
         self, batched_inputs, detected_instances=None, do_postprocess=True
