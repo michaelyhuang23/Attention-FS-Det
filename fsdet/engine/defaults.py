@@ -38,7 +38,7 @@ from fsdet.evaluation import (
     verify_results,
 )
 from fsdet.modeling import build_model
-from fsdet.data.fs_data_mapper import DatasetMapperWithSupport
+from fsdet.data.fs_data_mapper import DatasetMapperWithSupport, DatasetFSProcessor
 from fsdet.utils.file_io import PathManager
 from fvcore.nn.precise_bn import get_bn_modules
 from torch.nn.parallel import DistributedDataParallel
@@ -389,6 +389,7 @@ class DefaultTrainer(SimpleTrainer):
             )
 
         def test_and_save_results():
+            self.init_model(self.cfg, self.model)
             self._last_eval_results = self.test(self.cfg, self.model)
             return self._last_eval_results
 
@@ -461,6 +462,15 @@ class DefaultTrainer(SimpleTrainer):
             logger = logging.getLogger(__name__)
             logger.info("Model:\n{}".format(model))
         return model
+
+    @classmethod
+    def init_model(cls, cfg, model):
+        """
+        Returns model with parameters initialized
+        """
+        processor = DatasetFSProcessor(cfg, cfg.DATASETS.REFERENCE)
+        dataset = processor.get_processed_dataset()
+        model.init_model(dataset)
 
     @classmethod
     def build_optimizer(cls, cfg, model):

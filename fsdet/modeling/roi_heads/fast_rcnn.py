@@ -1,5 +1,6 @@
 """Implement the CosineSimOutputLayers and  FastRCNNOutputLayers with FC layers."""
 import logging
+from typing import Dict
 
 import numpy as np
 import torch
@@ -144,6 +145,8 @@ class FastRCNNOutputs(object):
         pred_proposal_deltas,
         proposals,
         smooth_l1_beta,
+        pref_cls,
+        device,
     ):
         """
         Args:
@@ -165,12 +168,16 @@ class FastRCNNOutputs(object):
             smooth_l1_beta (float): The transition point between L1 and L2 loss in
                 the smooth L1 loss function. When set to 0, the loss becomes L1. When
                 set to +inf, the loss becomes constant 0.
+            pref_cls : in training, class we care about
         """
+        self.device = device
+
         self.box2box_transform = box2box_transform
         self.num_preds_per_image = [len(p) for p in proposals]
         self.pred_class_logits = pred_class_logits
         self.pred_proposal_deltas = pred_proposal_deltas
         self.smooth_l1_beta = smooth_l1_beta
+        self.pref_cls = pref_cls
 
         box_type = type(proposals[0].proposal_boxes)
         # cat(..., dim=0) concatenates over all images in the batch
@@ -227,6 +234,17 @@ class FastRCNNOutputs(object):
         self._log_accuracy()
         return F.cross_entropy(
             self.pred_class_logits, self.gt_classes, reduction="mean"
+        )
+
+    def binary_cross_entropy_loss(self):
+        """
+        Compute binary cross entropy loss for the pref_class
+        """
+        self._log_accuracy()
+        match_cls = torch.zeros((self.pred_class_logits.shape[0]), device=self.device)
+        match_cls[self.gt_classes == self.pref_cls] = 1
+        return F.binary_cross_entropy_with_logits(
+            self.pred_class_logits[:,self.pref_cls], match_cls, reduction="mean"
         )
 
     def smooth_l1_loss(self):
@@ -296,7 +314,7 @@ class FastRCNNOutputs(object):
             A dict of losses (scalar tensors) containing keys "loss_cls" and "loss_box_reg".
         """
         return {
-            "loss_cls": self.softmax_cross_entropy_loss(),
+            "loss_cls": self.binary_cross_entropy_loss(),
             "loss_box_reg": self.smooth_l1_loss(),
         }
 
@@ -385,6 +403,48 @@ class FastRCNNOutputLayers(nn.Module):
         self.cls_score = nn.Linear(input_size, num_classes + 1)
         num_bbox_reg_classes = 1 if cls_agnostic_bbox_reg else num_classes
         self.bbox_pred = nn.Linear(input_size, num_bbox_reg_classes * box_dim)
+
+        nn.init.normal_(self.cls_score.weight, std=0.01)
+        nn.init.normal_(self.bbox_pred.weight, std=0.001)
+        for l in [self.cls_score, self.bbox_pred]:
+            nn.init.constant_(l.bias, 0)
+
+    def forward(self, x):
+        if x.dim() > 2:
+            x = torch.flatten(x, start_dim=1)
+        scores = self.cls_score(x)
+        proposal_deltas = self.bbox_pred(x)
+        return scores, proposal_deltas
+
+
+@ROI_HEADS_OUTPUT_REGISTRY.register()
+class AgnosticRCNNOutputLayers(nn.Module):
+    """
+    Two linear layers for predicting Fast R-CNN outputs:
+      (1) proposal-to-detection box regression deltas
+      (2) classification scores
+    """
+
+    def __init__(
+        self, cfg, input_size, num_classes, box_dim=4, cls_agnostic_bbox_reg=True
+    ):
+        """
+        Args:
+            cfg: config
+            input_size (int): channels, or (channels, height, width)
+            num_classes (int): number of foreground classes
+            box_dim (int): the dimension of bounding boxes.
+                Example box dimensions: 4 for regular XYXY boxes and 5 for rotated XYWHA boxes
+        """
+        super(AgnosticRCNNOutputLayers, self).__init__()
+
+        if not isinstance(input_size, int):
+            input_size = np.prod(input_size)
+        self.device = torch.device(cfg.MODEL.DEVICE)
+        # The prediction layer for num_classes foreground classes
+        self.box_dim = box_dim
+        self.cls_score = nn.Linear(input_size, 1)
+        self.bbox_pred = nn.Linear(input_size, self.box_dim)
 
         nn.init.normal_(self.cls_score.weight, std=0.01)
         nn.init.normal_(self.bbox_pred.weight, std=0.001)

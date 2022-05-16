@@ -11,7 +11,7 @@ from detectron2.layers import ShapeSpec
 from torch import nn
 
 from fsdet.modeling.roi_heads import build_roi_heads
-
+from fsdet.modeling.attention import CrossAttention
 # avoid conflicting with the existing GeneralizedRCNN module in Detectron2
 from .build import META_ARCH_REGISTRY
 
@@ -47,13 +47,8 @@ class GeneralizedRCNN(nn.Module):
         self.support_way = cfg.INPUT.FS.SUPPORT_WAY
         self.support_shot = cfg.INPUT.FS.SUPPORT_SHOT
         self.support_layer = cfg.MODEL.FPN.SUPPORT_LAYER
-        self.attn_size = cfg.MODEL.ATTENTION.INNER_SIZE
-        self.self_attn_weight = cfg.MODEL.ATTENTION.SELF_ATTENTION_WEIGHT
 
-        self.conv_support = nn.Conv2d(self.backbone.output_shape()[self.support_layer].channels, self.attn_size, kernel_size=1, bias=False)
-        self.conv_query = nn.Conv2d(self.backbone.output_shape()[self.support_layer].channels, self.attn_size, kernel_size=1, bias=False)
-        self.conv_self_support_attn = nn.Conv2d(self.backbone.output_shape()[self.support_layer].channels, 1, kernel_size=1, bias=False)
-        # maybe one is enough?
+        self.cross_attention = CrossAttention(cfg, self.backbone.output_shape()[self.support_layer].channels)
 
         assert len(cfg.MODEL.PIXEL_MEAN) == len(cfg.MODEL.PIXEL_STD)
         num_channels = len(cfg.MODEL.PIXEL_MEAN)
@@ -68,8 +63,6 @@ class GeneralizedRCNN(nn.Module):
             .view(num_channels, 1, 1)
         )
         self.normalizer = lambda x: (x - pixel_mean) / pixel_std
-
-
 
         self.to(self.device)
 
@@ -88,41 +81,17 @@ class GeneralizedRCNN(nn.Module):
                 p.requires_grad = False
             print("froze roi_box_head parameters")
 
-    def cross_attention(self, batched_features, batched_supports):
-        batched_features_tr = self.conv_query(batched_features)
+    def batched_cross_attention(self, batched_features, batched_supports):
+        """
+        batched_features: (B, C, H, W)
+        batched_supports: (B, N, C, H, W)
+        """
         all_support_ft = []
-
-        for features_tr, supports in zip(batched_features_tr, batched_supports):
-            supports_s = torch.squeeze(self.conv_self_support_attn(supports))
-            # self_supports shape: (N, H, W)
-            supports_s = supports_s.permute(1,2,0)[None,None,...]
-
-            # supports shape: (N, C, H, W)
-            supports_k = self.conv_support(supports)
-            supports_k = supports_k.permute(1,2,3,0)
-            # supports_k shape: (C', H, W, N)
-
-            # features_tr shape: (C', H, W)
-            features_tr = features_tr.permute(1,2,0)
-            # features_tr shape: (H, W, C')
-            CAtt = torch.tensordot(features_tr-torch.mean(features_tr), supports_k-torch.mean(supports_k), dims=1)
-            # CAtt shape: (Hq, Wq, Hs, Ws, Ns)
-            CAtt += supports_s * self.self_attn_weight
-            CAtt = torch.sigmoid(CAtt)
-
-            CAtt = torch.reshape(CAtt, (CAtt.shape[0], CAtt.shape[1], -1))
-            # CAtt shape: (Hq, Wq, L)
-            supports_n = supports.permute(2,3,0,1)
-            # supports_n shape: (H, W, N, C)
-            supports_n = torch.reshape(supports_n, (-1, supports_n.shape[-1]))
-            # supports_n shape: (L, C)
-
-            support_ft = torch.tensordot(CAtt, supports_n, dims=1)
-            # support_ft shape: (Hq, Wq, C)
-            support_ft = support_ft.permute(2, 0, 1)
+        for features, supports in zip(batched_features, batched_supports):
+            support_ft = self.cross_attention(features[None,...], supports)
             all_support_ft.append(support_ft)
 
-        batched_support_ft = torch.stack(all_support_ft, axis=0)
+        batched_support_ft = torch.cat(all_support_ft, axis=0)
         # batched_support_ft shape: (B, C, Hq, Wq)
         return batched_support_ft
 
@@ -136,6 +105,7 @@ class GeneralizedRCNN(nn.Module):
                 * image: Tensor, image in (C, H, W) format.
                 * pos_instances (optional): groundtruth :class:`Instances`
                 * neg_instances (optional): similar to pos_instances
+                * instances (optional): all instances
                 * support_images (optional): support images associated with this query (when training)
                 * support_boxes (optional): support boxes associated with this query (when training)
                 * support_cls (optional): support classes associated with this query (when training)
@@ -156,25 +126,25 @@ class GeneralizedRCNN(nn.Module):
         if not self.training:
             return self.inference(batched_inputs)
 
-        # print("training")
-        # print(f'batched_input length: {len(batched_inputs)}')
-        # print(batched_inputs[0]['image'].shape, batched_inputs[0]['support_pos_images'][0].shape)
-
         images = self.preprocess_image(batched_inputs)
 
         if "pos_instances" in batched_inputs[0]:
             pos_gt_instances = [
                 x["pos_instances"].to(self.device) for x in batched_inputs
             ]
+            pos_cls = batched_inputs[0]['support_pos_cls']
         else:
             pos_gt_instances = None
+            pos_cls = None
 
         if "neg_instances" in batched_inputs[0]:
             neg_gt_instances = [
                 x["neg_instances"].to(self.device) for x in batched_inputs
             ]
+            neg_cls = batched_inputs[0]['support_neg_cls']
         else:
             neg_gt_instances = None
+            neg_cls = None
 
         if "instances" in batched_inputs[0]:
             gt_instances = [
@@ -194,8 +164,8 @@ class GeneralizedRCNN(nn.Module):
 
         for key, feature in features.items():
             # shape: (B, C, H, W)
-            pos_supports_fts = self.cross_attention(feature, pos_supports)
-            neg_supports_fts = self.cross_attention(feature, neg_supports)
+            pos_supports_fts = self.batched_cross_attention(feature, pos_supports)
+            neg_supports_fts = self.batched_cross_attention(feature, neg_supports)
             # shape: (B, C, H, W)
             # print(f'pos_supports_fts shape: {pos_supports_fts.shape}')
             pos_features[key] = torch.cat([feature, pos_supports_fts], dim=1)
@@ -217,7 +187,7 @@ class GeneralizedRCNN(nn.Module):
 
         # roi_heads should function as it should in inference: given all gt_instances, it needs to distinguish which class each proposal belongs
         _, detector_losses = self.roi_heads(  
-            images, features, pos_proposals, pos_supports, pos_support_proposals, targets=gt_instances
+            images, features, pos_proposals, pos_supports, pos_support_proposals, targets=gt_instances, pref_cls=pos_cls
         )
 
         losses = {}
@@ -248,7 +218,9 @@ class GeneralizedRCNN(nn.Module):
         """
         batched_inputs is a list of dict --- outputs of DatasetMapper
         """
-        pos_supports, pos_image_sizes = self.process_supports(batched_inputs, "support_pos_images")
+        self.supports, self.supports_image_sizes = self.process_supports(batched_inputs, "support_images")
+        # print(self.supports.shape)
+        # self.supports.shape (Cl, N, C, H, W)
 
     def inference(
         self, batched_inputs, detected_instances=None, do_postprocess=True
@@ -274,12 +246,30 @@ class GeneralizedRCNN(nn.Module):
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
 
+        # print("run prep")
+        support_proposals = []
+        for ci, cls_support_fts in enumerate(self.supports):
+            cat_features = {}
+            for key, feature in features.items():
+                # shape: (B, C, H, W)
+                supports_fts = self.cross_attention(feature, cls_support_fts)
+                # shape: (B, C, H, W)
+                cat_features[key] = torch.cat([feature, supports_fts], dim=1)
 
+            support_img_height = self.supports_image_sizes[ci][0]
+            support_img_width = self.supports_image_sizes[ci][1]
+            instances = Instances(image_size=(support_img_height, support_img_width))
+            instances.proposal_boxes = Boxes(torch.tensor([[0, 0, support_img_width, support_img_height]], device=self.device)).to(self.device)
+            for i in range(len(cls_support_fts)):
+                support_proposals.append(copy.deepcopy(instances))
+
+            proposals, _ = self.rpn_forward(images, cat_features, None, batched_inputs)
+        # print("finish prep")
         
-        proposals, _  = self.rpn_forward(images, features, None, batched_inputs)
 
-        results, _ = self.roi_heads(images, features, proposals, None)
-
+        # print("run head")
+        results, _ = self.roi_heads(images, features, proposals, self.supports, support_proposals, targets=None, pref_cls=None)
+        # print("finish head")
         if do_postprocess:
             processed_results = []
             for results_per_image, input_per_image, image_size in zip(

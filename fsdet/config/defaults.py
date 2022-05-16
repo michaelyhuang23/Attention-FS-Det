@@ -12,9 +12,11 @@ _CC.MODEL.ROI_HEADS.FREEZE_FEAT = False
 _CC.MODEL.ROI_HEADS.IN_SUPPORT_FEATURES = ["p5"]
 
 # choose from "FastRCNNOutputLayers" and "CosineSimOutputLayers"
-_CC.MODEL.ROI_HEADS.OUTPUT_LAYER = "FastRCNNOutputLayers"
+_CC.MODEL.ROI_HEADS.OUTPUT_LAYER = "AgnosticRCNNOutputLayers"
 # scale of cosine similarity (set to -1 for learnable scale)
 _CC.MODEL.ROI_HEADS.COSINE_SCALE = 20.0
+
+_CC.DATASETS.REFERENCE = ("coco_2017_val",)
 
 # Backward Compatible options.
 _CC.MUTE_HEADER = True

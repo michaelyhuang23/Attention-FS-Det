@@ -6,7 +6,7 @@ MODEL:
     DEPTH: 101
   ROI_HEADS:
     NUM_CLASSES: 20
-    OUTPUT_LAYER: "CosineSimOutputLayers"
+    OUTPUT_LAYER: "AgnosticRCNNOutputLayers"
 INPUT:
   MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
   MIN_SIZE_TEST: 800

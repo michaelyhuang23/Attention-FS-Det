@@ -227,7 +227,7 @@ def register_all_pascal_voc(root="datasets"):
     ]
 
     # register small meta datasets for fine-tuning stage
-    for prefix in ["all", "novel"]:
+    for prefix in ["all", "novel", "base"]:
         for sid in range(1, 4):
             for shot in [1, 2, 3, 5, 10]:
                 for year in [2007, 2012]:
@@ -240,11 +240,12 @@ def register_all_pascal_voc(root="datasets"):
                         img_file = "{}_{}shot_split_{}_trainval".format(
                             prefix, shot, sid
                         )
-                        keepclasses = (
-                            "base_novel_{}".format(sid)
-                            if prefix == "all"
-                            else "novel{}".format(sid)
-                        )
+                        if prefix == 'all':
+                            keepclasses = ('base_novel_{}'.format(sid))
+                        elif prefix == 'novel':
+                            keepclasses = ('novel{}'.format(sid))
+                        else:
+                            keepclasses = ('base{}'.format(sid))
                         METASPLITS.append(
                             (name, dirname, img_file, keepclasses, sid)
                         )

@@ -20,6 +20,73 @@ from detectron2.structures import BoxMode
 import pandas as pd
 from detectron2.data.catalog import MetadataCatalog
 
+def crop_resize_obj(image, box_in, box_mode, max_size):
+    box = copy.deepcopy(box_in)
+    box = [round(b) for b in box]
+    if box_mode == BoxMode.XYXY_ABS:
+        W = max(1, box[2] - box[0])
+        H = max(1, box[3] - box[1])
+        x1, y1, x2, y2 = box
+    elif box_mode == BoxMode.XYWH_ABS:
+        W = max(1, box[2])
+        H = max(1, box[3])
+        x1, y1, x2, y2 = box[0], box[1], box[0]+box[2]-1, box[1]+box[3]-1
+    else: 
+        raise ValueError("wrong box mode")
+
+    assert(image.shape[0] >= y2 and image.shape[1] >= x2)
+    
+    x2 = min(image.shape[1]-1, x2)
+    y2 = min(image.shape[0]-1, y2)
+
+    assert(x2 >= x1 and y2 >= y1)
+
+    ratio = max_size / float(max(W,H))
+    image = image[y1 : y2+1, x1 : x2+1]
+    # W and H
+    target_size = (round(W*ratio), round(H*ratio))
+
+    assert(target_size[0] == max_size or target_size[1] == max_size)
+    return cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR)
+
+class DatasetFSProcessor:
+    def __init__(self, cfg, dataset_name):
+        # fmt: off
+        self.name = dataset_name
+        self.img_format     = cfg.INPUT.FORMAT
+        self.mask_on        = False
+        self.keypoint_on    = False
+
+        self.support_way    = cfg.INPUT.FS.SUPPORT_WAY
+        self.support_shot   = cfg.INPUT.FS.SUPPORT_SHOT
+        self.max_obj_size   = cfg.INPUT.FS.MAX_SUPPORT_OBJ_SIZE
+
+        if self.max_obj_size == 0 : self.max_obj_size = 320
+
+        assert(self.support_way == 1 or self.support_way == 2)
+
+        dataset_dicts = get_detection_dataset_dicts(
+            self.name,
+            filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
+            min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE if cfg.MODEL.KEYPOINT_ON else 0,
+            proposal_files=cfg.DATASETS.PROPOSAL_FILES_TRAIN if cfg.MODEL.LOAD_PROPOSALS else None,
+        )
+
+        meta_name = self.name[0] if isinstance(self.name, Tuple)  else self.name
+        self.classnames = MetadataCatalog.get(meta_name).thing_classes
+
+        self.support_dataset = [{'support_images':[]} for i in range(len(self.classnames))]
+        # List[Dict()] a list with each dict corresponding to a class. Inside each dict, we have the 'support_images' key
+        for img_dict in dataset_dicts:
+            image_orig = utils.read_image(img_dict['file_name'], format=self.img_format)
+            anno = img_dict['annotations'][0]
+            image = crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
+            image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
+            self.support_dataset[anno['category_id']]['support_images'].append(image)
+
+    def get_processed_dataset(self):
+        return self.support_dataset
+
 
 class DatasetMapperWithSupport(DatasetMapper):
     """
@@ -67,7 +134,7 @@ class DatasetMapperWithSupport(DatasetMapper):
 
         self.support_dataset = dataset_dicts
         meta_name = self.name[0] if isinstance(self.name, Tuple)  else self.name
-        self.classnames = MetadataCatalog.get(self.name[0]).thing_classes
+        self.classnames = MetadataCatalog.get(meta_name).thing_classes
 
 
     def __call__(self, dataset_dict):
@@ -100,18 +167,16 @@ class DatasetMapperWithSupport(DatasetMapper):
         if self.is_train:
             # create positive support
             support_pos_images, support_pos_bboxes, support_pos_cls = self.generate_positive_support(dataset_dict)
-            dataset_dict['support_pos_images'] = support_pos_images
-            dataset_dict['support_pos_bboxes'] = support_pos_bboxes
-            dataset_dict['support_pos_cls'] = support_pos_cls
             pos_cls = support_pos_cls[0]
+            dataset_dict['support_pos_images'] = support_pos_images
+            dataset_dict['support_pos_cls'] = pos_cls
 
             if self.support_way == 2:
                 # create negative support
                 support_neg_images, support_neg_bboxes, support_neg_cls = self.generate_negative_support(dataset_dict)
-                dataset_dict['support_neg_images'] = support_neg_images
-                dataset_dict['support_neg_bboxes'] = support_neg_bboxes
-                dataset_dict['support_neg_cls'] = support_neg_cls
                 neg_cls = support_neg_cls[0]
+                dataset_dict['support_neg_images'] = support_neg_images
+                dataset_dict['support_neg_cls'] = neg_cls
 
 
         image_shape = image.shape[:2]  # h, w
@@ -201,7 +266,7 @@ class DatasetMapperWithSupport(DatasetMapper):
             if shots - len(support_images) < len(class_annos):
                 class_annos = random.sample(class_annos, shots - len(support_images))
             for anno in class_annos:
-                image = self.crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
+                image = crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
                 image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
                 support_images.append(image)
                 support_bboxes.append(anno['bbox'])
@@ -211,33 +276,4 @@ class DatasetMapperWithSupport(DatasetMapper):
                 break
         assert len(support_images) == shots
         return support_images, support_bboxes, support_cls
-
-    def crop_resize_obj(self, image, box_in, box_mode, max_size):
-        box = copy.deepcopy(box_in)
-        box = [round(b) for b in box]
-        if box_mode == BoxMode.XYXY_ABS:
-            W = max(1, box[2] - box[0])
-            H = max(1, box[3] - box[1])
-            x1, y1, x2, y2 = box
-        elif box_mode == BoxMode.XYWH_ABS:
-            W = max(1, box[2])
-            H = max(1, box[3])
-            x1, y1, x2, y2 = box[0], box[1], box[0]+box[2]-1, box[1]+box[3]-1
-        else: 
-            raise ValueError("wrong box mode")
-
-        assert(image.shape[0] >= y2 and image.shape[1] >= x2)
-        
-        x2 = min(image.shape[1]-1, x2)
-        y2 = min(image.shape[0]-1, y2)
-
-        assert(x2 >= x1 and y2 >= y1)
-
-        ratio = max_size / float(max(W,H))
-        image = image[y1 : y2+1, x1 : x2+1]
-        # W and H
-        target_size = (round(W*ratio), round(H*ratio))
-
-        assert(target_size[0] == max_size or target_size[1] == max_size)
-        return cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR)
 

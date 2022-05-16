@@ -22,6 +22,9 @@ from torch import nn
 from .box_head import build_box_head
 from .fast_rcnn import ROI_HEADS_OUTPUT_REGISTRY, FastRCNNOutputs
 
+from fsdet.modeling.attention import CrossAttention
+
+
 ROI_HEADS_REGISTRY = Registry("ROI_HEADS")
 ROI_HEADS_REGISTRY.__doc__ = """
 Registry for ROI heads in a generalized R-CNN model.
@@ -85,7 +88,7 @@ class ROIHeads(torch.nn.Module):
 
     def __init__(self, cfg, input_shape: Dict[str, ShapeSpec]):
         super(ROIHeads, self).__init__()
-
+        self.device = torch.device(cfg.MODEL.DEVICE)
         # fmt: off
         self.batch_size_per_image     = cfg.MODEL.ROI_HEADS.BATCH_SIZE_PER_IMAGE
         self.positive_sample_fraction = cfg.MODEL.ROI_HEADS.POSITIVE_FRACTION
@@ -427,13 +430,7 @@ class StandardROIHeads(ROIHeads):
             pooler_type=pooler_type,
         )
 
-
-        self.attn_size = cfg.MODEL.ATTENTION.INNER_SIZE
-        self.self_attn_weight = cfg.MODEL.ATTENTION.SELF_ATTENTION_WEIGHT
-
-        self.conv_support = nn.Conv2d(in_channels, self.attn_size, kernel_size=1, bias=False)
-        self.conv_query = nn.Conv2d(in_channels, self.attn_size, kernel_size=1, bias=False)
-        self.conv_self_support_attn = nn.Conv2d(in_channels, 1, kernel_size=1, bias=False)
+        self.cross_attention = CrossAttention(cfg, in_channels)
 
         # Here we split "box head" and "box predictor", which is mainly due to historical reasons.
         # They are used together so the "box predictor" layers should be part of the "box head".
@@ -451,10 +448,9 @@ class StandardROIHeads(ROIHeads):
             cfg,
             self.box_head.output_size,
             self.num_classes,
-            self.cls_agnostic_bbox_reg,
         )
 
-    def forward(self, images, features, proposals, support_features, support_proposals, targets=None):
+    def forward(self, images, features, proposals, support_features, support_proposals, targets=None, pref_cls=None):
         """
         See :class:`ROIHeads.forward`.
         """
@@ -467,13 +463,13 @@ class StandardROIHeads(ROIHeads):
         support_features_list = [support_features]
 
         if self.training:
-            losses = self._forward_box(features_list, proposals, support_features_list, support_proposals)
+            losses = self._forward_box(features_list, proposals, support_features_list, support_proposals, pref_cls)
             return proposals, losses
         else:
-            pred_instances = self._forward_box(features_list, proposals, support_features_list, support_proposals)
+            pred_instances = self._forward_box(features_list, proposals, support_features_list, support_proposals, pref_cls)
             return pred_instances, {}
 
-    def _forward_box(self, features, proposals, support_features, support_proposals):
+    def _forward_box(self, features, proposals, batched_support_features, support_proposals, pref_cls=None):
         """
         Forward logic of the box prediction branch.
 
@@ -488,35 +484,47 @@ class StandardROIHeads(ROIHeads):
             In training, a dict of losses.
             In inference, a list of `Instances`, the predicted instances.
         """
-        # print(f'features shape: {features[0].shape}')
-        # print(f'support_features shape: {support_features[0].shape}')
+        B = features[0].shape[0]
 
         box_features = self.box_pooler(
             features, [x.proposal_boxes for x in proposals]
-        )
+        ) # shape: (B*Bo, C, H, W)
 
-        B, N = support_features[0].shape[:2]
-        support_features = [support_feature.reshape(-1, *support_feature.shape[-3:]) for support_feature in support_features]
+        Bo = box_features.shape[0]//B
+
+        Bs, Ns = batched_support_features[0].shape[:2]
+        batched_support_features = [support_feature.reshape(-1, *support_feature.shape[-3:]) for support_feature in batched_support_features]
         # shape: (B*N, C, H, W)
-        # print(support_features[0].shape)
-
-        support_box_features = self.support_box_pooler(
-            support_features, [x.proposal_boxes for x in support_proposals]
+        batched_support_box_features = self.support_box_pooler(
+            batched_support_features, [x.proposal_boxes for x in support_proposals]
         )
+        batched_support_box_features = batched_support_box_features.reshape(Bs, Ns, *batched_support_box_features.shape[-3:]) 
+        # shape (B, N, C, H, W)
 
-        # (512, 256, 7, 7), the first dim is the number of proposals*batch_size
-        # (B*N, 256, 7, 7)
-        support_box_features = support_box_features.reshape(B, N, *support_box_features.shape[-3:])
-        batched_box_features = box_features.reshape(B, -1, *box_features.shape[-3:])
-        query_support_ft = self.cross_attention(batched_box_features, support_box_features)
-        query_support_ft = query_support_ft.reshape(-1, *query_support_ft.shape[-3:])
-
-        box_features = torch.cat([box_features,query_support_ft], 1)
-
-        box_features = self.box_head(box_features)
-        pred_class_logits, pred_proposal_deltas = self.box_predictor(
-            box_features
-        )
+        pred_class_logits = torch.zeros((B*Bo, self.num_classes+1),device=self.device)
+        pred_proposal_deltas = torch.zeros((B*Bo, self.num_classes*4),device=self.device)
+        if self.training:
+            batched_box_features = box_features.reshape(B, -1, *box_features.shape[-3:]) # shape: (B, Bo, C, H, W)
+            all_query_support_ft = []
+            for img_box_features, support_box_features in zip(batched_box_features, batched_support_box_features):
+                query_support_ft = self.cross_attention(img_box_features, support_box_features) # shape: (Bo, C, H, W)
+                all_query_support_ft.append(query_support_ft)
+            query_support_fts = torch.cat(all_query_support_ft, 0) # shape (B*Bo, C, H, W)
+            query_support_fts = torch.cat([box_features,query_support_fts], 1)
+            query_support_fts = self.box_head(query_support_fts)
+            logits, proposal_deltas = self.box_predictor(query_support_fts)
+            pred_class_logits[:, pref_cls:pref_cls+1] = logits
+            pred_proposal_deltas[:, pref_cls*4:(pref_cls+1)*4] = proposal_deltas
+            del query_support_fts
+        else:
+            for ci, support_box_features in enumerate(batched_support_box_features):
+                query_support_fts = self.cross_attention(box_features, support_box_features) # shape (B*Bo, C, H, W)
+                query_support_fts = torch.cat([box_features,query_support_fts], 1)
+                query_support_fts = self.box_head(query_support_fts)
+                logits, proposal_deltas = self.box_predictor(query_support_fts)
+                pred_class_logits[:, ci:ci+1] = logits
+                pred_proposal_deltas[:, ci*4:(ci+1)*4] = proposal_deltas
+                del query_support_fts
         del box_features
 
         outputs = FastRCNNOutputs(
@@ -525,6 +533,8 @@ class StandardROIHeads(ROIHeads):
             pred_proposal_deltas,
             proposals,
             self.smooth_l1_beta,
+            pref_cls,
+            self.device,
         )
         if self.training:
             return outputs.losses()
@@ -535,42 +545,3 @@ class StandardROIHeads(ROIHeads):
                 self.test_detections_per_img,
             )
             return pred_instances
-
-    def cross_attention(self, batched_features, batched_supports):
-        # batched_features shape: (B, Bo, C, H, W)
-        all_support_ft = []
-
-        for features, supports in zip(batched_features, batched_supports):
-            features_trs = self.conv_query(features)
-            supports_s = torch.squeeze(self.conv_self_support_attn(supports))
-            # self_supports shape: (N, H, W)
-            supports_s = supports_s.permute(1,2,0)[None,None,None,...]
-
-            # supports shape: (N, C, H, W)
-            supports_k = self.conv_support(supports)
-            supports_k = supports_k.permute(1,2,3,0)
-            # supports_k shape: (C', H, W, N)
-
-            # features_trs shape: (Bo, C', H, W)
-            features_trs = features_trs.permute(0,2,3,1)
-            # features_trs shape: (Bo, H, W, C')
-            CAtt = torch.tensordot(features_trs-torch.mean(features_trs), supports_k-torch.mean(supports_k), dims=1)
-            # CAtt shape: (Bo, Hq, Wq, Hs, Ws, Ns)
-            CAtt += supports_s * self.self_attn_weight
-            CAtt = torch.sigmoid(CAtt)
-
-            CAtt = torch.reshape(CAtt, (CAtt.shape[0], CAtt.shape[1], CAtt.shape[2], -1))
-            # CAtt shape: (Bo, Hq, Wq, L)
-            supports_n = supports.permute(2,3,0,1)
-            # supports_n shape: (H, W, N, C)
-            supports_n = torch.reshape(supports_n, (-1, supports_n.shape[-1]))
-            # supports_n shape: (L, C)
-
-            support_ft = torch.tensordot(CAtt, supports_n, dims=1)
-            # support_ft shape: (Bo, Hq, Wq, C)
-            support_ft = support_ft.permute(0, 3, 1, 2)
-            all_support_ft.append(support_ft)
-
-        batched_support_ft = torch.stack(all_support_ft, axis=0)
-        # batched_support_ft shape: (B, Bo, C, Hq, Wq)
-        return batched_support_ft

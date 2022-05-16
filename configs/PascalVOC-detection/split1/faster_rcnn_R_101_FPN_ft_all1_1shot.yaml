@@ -6,7 +6,7 @@ MODEL:
     DEPTH: 101
   ROI_HEADS:
     NUM_CLASSES: 20
-    OUTPUT_LAYER: "CosineSimOutputLayers"
+    OUTPUT_LAYER: "AgnosticRCNNOutputLayers"
     FREEZE_FEAT: True
   BACKBONE:
     FREEZE: True
