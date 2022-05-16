@@ -391,6 +391,7 @@ class DefaultTrainer(SimpleTrainer):
         def test_and_save_results():
             self.init_model(self.cfg, self.model)
             self._last_eval_results = self.test(self.cfg, self.model)
+            self.uninit_model(self.model)
             return self._last_eval_results
 
         # Do evaluation after checkpointer, because then if it fails,
@@ -471,6 +472,13 @@ class DefaultTrainer(SimpleTrainer):
         processor = DatasetFSProcessor(cfg, cfg.DATASETS.REFERENCE)
         dataset = processor.get_processed_dataset()
         model.init_model(dataset)
+
+    @classmethod
+    def uninit_model(cls, model):
+        """
+        Returns model with parameters initialized
+        """
+        model.uninit_model()
 
     @classmethod
     def build_optimizer(cls, cfg, model):

@@ -222,6 +222,10 @@ class GeneralizedRCNN(nn.Module):
         # print(self.supports.shape)
         # self.supports.shape (Cl, N, C, H, W)
 
+    def uninit_model(self):
+        del self.supports
+        del self.supports_image_sizes
+
     def inference(
         self, batched_inputs, detected_instances=None, do_postprocess=True
     ):
