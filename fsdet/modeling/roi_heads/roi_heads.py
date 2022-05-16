@@ -93,6 +93,7 @@ class ROIHeads(torch.nn.Module):
         self.test_nms_thresh          = cfg.MODEL.ROI_HEADS.NMS_THRESH_TEST
         self.test_detections_per_img  = cfg.TEST.DETECTIONS_PER_IMAGE
         self.in_features              = cfg.MODEL.ROI_HEADS.IN_FEATURES
+        self.in_support_features      = cfg.MODEL.ROI_HEADS.IN_SUPPORT_FEATURES
         self.num_classes              = cfg.MODEL.ROI_HEADS.NUM_CLASSES
         self.proposal_append_gt       = cfg.MODEL.ROI_HEADS.PROPOSAL_APPEND_GT
         self.feature_strides          = {k: v.stride for k, v in input_shape.items()}
@@ -400,6 +401,7 @@ class StandardROIHeads(ROIHeads):
         # fmt: off
         pooler_resolution = cfg.MODEL.ROI_BOX_HEAD.POOLER_RESOLUTION
         pooler_scales     = tuple(1.0 / self.feature_strides[k] for k in self.in_features)
+        support_pooler_scales = tuple(1.0 / self.feature_strides[k] for k in self.in_support_features)
         sampling_ratio    = cfg.MODEL.ROI_BOX_HEAD.POOLER_SAMPLING_RATIO
         pooler_type       = cfg.MODEL.ROI_BOX_HEAD.POOLER_TYPE
         # fmt: on
@@ -417,26 +419,42 @@ class StandardROIHeads(ROIHeads):
             sampling_ratio=sampling_ratio,
             pooler_type=pooler_type,
         )
+
+        self.support_box_pooler = ROIPooler(
+            output_size=pooler_resolution,
+            scales=support_pooler_scales,
+            sampling_ratio=sampling_ratio,
+            pooler_type=pooler_type,
+        )
+
+
+        self.attn_size = cfg.MODEL.ATTENTION.INNER_SIZE
+        self.self_attn_weight = cfg.MODEL.ATTENTION.SELF_ATTENTION_WEIGHT
+
+        self.conv_support = nn.Conv2d(in_channels, self.attn_size, kernel_size=1, bias=False)
+        self.conv_query = nn.Conv2d(in_channels, self.attn_size, kernel_size=1, bias=False)
+        self.conv_self_support_attn = nn.Conv2d(in_channels, 1, kernel_size=1, bias=False)
+
         # Here we split "box head" and "box predictor", which is mainly due to historical reasons.
         # They are used together so the "box predictor" layers should be part of the "box head".
         # New subclasses of ROIHeads do not need "box predictor"s.
-        self.box_head = build_box_head(
+        self.box_head = build_box_head( # this box_head has optional fc and conv layers, usually set to 2 fc layers
             cfg,
             ShapeSpec(
-                channels=in_channels,
+                channels=in_channels*2,
                 height=pooler_resolution,
                 width=pooler_resolution,
             ),
         )
         output_layer = cfg.MODEL.ROI_HEADS.OUTPUT_LAYER
-        self.box_predictor = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)(
+        self.box_predictor = ROI_HEADS_OUTPUT_REGISTRY.get(output_layer)( # this decides Cos similarity vs normal softmax
             cfg,
             self.box_head.output_size,
             self.num_classes,
             self.cls_agnostic_bbox_reg,
         )
 
-    def forward(self, images, features, proposals, targets=None):
+    def forward(self, images, features, proposals, support_features, support_proposals, targets=None):
         """
         See :class:`ROIHeads.forward`.
         """
@@ -446,15 +464,16 @@ class StandardROIHeads(ROIHeads):
         del targets
 
         features_list = [features[f] for f in self.in_features]
+        support_features_list = [support_features]
 
         if self.training:
-            losses = self._forward_box(features_list, proposals)
+            losses = self._forward_box(features_list, proposals, support_features_list, support_proposals)
             return proposals, losses
         else:
-            pred_instances = self._forward_box(features_list, proposals)
+            pred_instances = self._forward_box(features_list, proposals, support_features_list, support_proposals)
             return pred_instances, {}
 
-    def _forward_box(self, features, proposals):
+    def _forward_box(self, features, proposals, support_features, support_proposals):
         """
         Forward logic of the box prediction branch.
 
@@ -469,9 +488,31 @@ class StandardROIHeads(ROIHeads):
             In training, a dict of losses.
             In inference, a list of `Instances`, the predicted instances.
         """
+        # print(f'features shape: {features[0].shape}')
+        # print(f'support_features shape: {support_features[0].shape}')
+
         box_features = self.box_pooler(
             features, [x.proposal_boxes for x in proposals]
         )
+
+        B, N = support_features[0].shape[:2]
+        support_features = [support_feature.reshape(-1, *support_feature.shape[-3:]) for support_feature in support_features]
+        # shape: (B*N, C, H, W)
+        # print(support_features[0].shape)
+
+        support_box_features = self.support_box_pooler(
+            support_features, [x.proposal_boxes for x in support_proposals]
+        )
+
+        # (512, 256, 7, 7), the first dim is the number of proposals*batch_size
+        # (B*N, 256, 7, 7)
+        support_box_features = support_box_features.reshape(B, N, *support_box_features.shape[-3:])
+        batched_box_features = box_features.reshape(B, -1, *box_features.shape[-3:])
+        query_support_ft = self.cross_attention(batched_box_features, support_box_features)
+        query_support_ft = query_support_ft.reshape(-1, *query_support_ft.shape[-3:])
+
+        box_features = torch.cat([box_features,query_support_ft], 1)
+
         box_features = self.box_head(box_features)
         pred_class_logits, pred_proposal_deltas = self.box_predictor(
             box_features
@@ -494,3 +535,42 @@ class StandardROIHeads(ROIHeads):
                 self.test_detections_per_img,
             )
             return pred_instances
+
+    def cross_attention(self, batched_features, batched_supports):
+        # batched_features shape: (B, Bo, C, H, W)
+        all_support_ft = []
+
+        for features, supports in zip(batched_features, batched_supports):
+            features_trs = self.conv_query(features)
+            supports_s = torch.squeeze(self.conv_self_support_attn(supports))
+            # self_supports shape: (N, H, W)
+            supports_s = supports_s.permute(1,2,0)[None,None,None,...]
+
+            # supports shape: (N, C, H, W)
+            supports_k = self.conv_support(supports)
+            supports_k = supports_k.permute(1,2,3,0)
+            # supports_k shape: (C', H, W, N)
+
+            # features_trs shape: (Bo, C', H, W)
+            features_trs = features_trs.permute(0,2,3,1)
+            # features_trs shape: (Bo, H, W, C')
+            CAtt = torch.tensordot(features_trs-torch.mean(features_trs), supports_k-torch.mean(supports_k), dims=1)
+            # CAtt shape: (Bo, Hq, Wq, Hs, Ws, Ns)
+            CAtt += supports_s * self.self_attn_weight
+            CAtt = torch.sigmoid(CAtt)
+
+            CAtt = torch.reshape(CAtt, (CAtt.shape[0], CAtt.shape[1], CAtt.shape[2], -1))
+            # CAtt shape: (Bo, Hq, Wq, L)
+            supports_n = supports.permute(2,3,0,1)
+            # supports_n shape: (H, W, N, C)
+            supports_n = torch.reshape(supports_n, (-1, supports_n.shape[-1]))
+            # supports_n shape: (L, C)
+
+            support_ft = torch.tensordot(CAtt, supports_n, dims=1)
+            # support_ft shape: (Bo, Hq, Wq, C)
+            support_ft = support_ft.permute(0, 3, 1, 2)
+            all_support_ft.append(support_ft)
+
+        batched_support_ft = torch.stack(all_support_ft, axis=0)
+        # batched_support_ft shape: (B, Bo, C, Hq, Wq)
+        return batched_support_ft

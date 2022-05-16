@@ -5,6 +5,7 @@ This file contains the datamapper to be passed into the training dataloader
 import copy
 import logging
 import random
+from typing import Tuple
 import numpy as np
 import torch
 import cv2
@@ -13,14 +14,14 @@ from PIL import Image
 
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
-from detectron2.data import get_detection_dataset_dicts
+from detectron2.data import get_detection_dataset_dicts, DatasetMapper
 from detectron2.structures import BoxMode
 
 import pandas as pd
 from detectron2.data.catalog import MetadataCatalog
 
 
-class DatasetMapperWithSupport:
+class DatasetMapperWithSupport(DatasetMapper):
     """
     A callable which takes a dataset dict in Detectron2 Dataset format,
     and map it into a format used by the model.
@@ -38,17 +39,15 @@ class DatasetMapperWithSupport:
     """
 
     def __init__(self, cfg, dataset_name, is_train=True):
-
+        super().__init__(cfg, is_train=is_train)
         # fmt: off
         self.name = dataset_name
         self.img_format     = cfg.INPUT.FORMAT
         self.mask_on        = False
         self.keypoint_on    = False
 
-        self.few_shot       = cfg.INPUT.FS.FEW_SHOT
         self.support_way    = cfg.INPUT.FS.SUPPORT_WAY
         self.support_shot   = cfg.INPUT.FS.SUPPORT_SHOT
-        self.support_file   = cfg.INPUT.FS.SUPPORT_FILE
         self.max_obj_size   = cfg.INPUT.FS.MAX_SUPPORT_OBJ_SIZE
 
         if self.max_obj_size == 0 : self.max_obj_size = 320
@@ -58,7 +57,7 @@ class DatasetMapperWithSupport:
         self.is_train = is_train
 
         dataset_dicts = get_detection_dataset_dicts(
-            dataset_name,
+            self.name,
             filter_empty=cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS,
             min_keypoints=cfg.MODEL.ROI_KEYPOINT_HEAD.MIN_KEYPOINTS_PER_IMAGE
             if cfg.MODEL.KEYPOINT_ON
@@ -67,7 +66,8 @@ class DatasetMapperWithSupport:
         )
 
         self.support_dataset = dataset_dicts
-        self.classnames = MetadataCatalog.get(self.name).thing_classes
+        meta_name = self.name[0] if isinstance(self.name, Tuple)  else self.name
+        self.classnames = MetadataCatalog.get(self.name[0]).thing_classes
 
 
     def __call__(self, dataset_dict):
@@ -78,6 +78,7 @@ class DatasetMapperWithSupport:
         Returns:
             dict: a format that builtin models in detectron2 accept
         """
+        # print("loading data")
         dataset_dict = copy.deepcopy(dataset_dict)  # it will be modified by code below
         # USER: Write your own image loading if it's not from a file
         image = utils.read_image(dataset_dict["file_name"], format=self.img_format)
@@ -90,6 +91,10 @@ class DatasetMapperWithSupport:
                     anno.pop("segmentation", None)
                 if not self.keypoint_on:
                     anno.pop("keypoints", None)
+
+        aug_input = T.AugInput(image, sem_seg=None)
+        transforms = self.augmentations(aug_input)
+        image,_ = aug_input.image, aug_input.sem_seg
 
         pos_cls, neg_cls = -1, -1
         if self.is_train:
@@ -127,7 +132,7 @@ class DatasetMapperWithSupport:
                 utils.transform_instance_annotations(
                     obj, transforms, image_shape
                 )
-                for obj in dataset_dict.pop("annotations")
+                for obj in dataset_dict["annotations"]
                 if obj.get("iscrowd", 0) == 0 and obj.get("category_id") == pos_cls
             ]
             pos_instances = utils.annotations_to_instances(
@@ -140,7 +145,7 @@ class DatasetMapperWithSupport:
                 utils.transform_instance_annotations(
                     obj, transforms, image_shape
                 )
-                for obj in dataset_dict.pop("annotations")
+                for obj in dataset_dict["annotations"]
                 if obj.get("iscrowd", 0) == 0 and obj.get("category_id") == neg_cls
             ]
             neg_instances = utils.annotations_to_instances(
@@ -149,19 +154,34 @@ class DatasetMapperWithSupport:
             # Create a tight bounding box from masks, useful when image is cropped
             dataset_dict["neg_instances"] = utils.filter_empty_instances(neg_instances)
 
+            annos = [
+                utils.transform_instance_annotations(
+                    obj, transforms, image_shape
+                )
+                for obj in dataset_dict.pop("annotations")
+                if obj.get("iscrowd", 0) == 0
+            ]
+            all_instances = utils.annotations_to_instances(
+                annos, image_shape
+            )
+            # Create a tight bounding box from masks, useful when image is cropped
+            dataset_dict["instances"] = utils.filter_empty_instances(all_instances)
+
         return dataset_dict
 
     def generate_positive_support(self, dataset_dict):
         used_categories = list(set([anno['category_id'] for anno in dataset_dict['annotations']]))
-        chosen_cls = random.sample(used_categories, 1)
+        chosen_cls = random.sample(used_categories, 1)[0]
         forbidden_imgs = [dataset_dict['image_id']]
+        # print(f"positive chosen id: {chosen_cls}")
         return self.generate_support(chosen_cls, self.support_shot, forbidden_imgs)
 
     def generate_negative_support(self, dataset_dict):
         used_categories = list(set([anno['category_id'] for anno in dataset_dict['annotations']]))
-        not_used_categories = [clsname for clsname in self.classnames if clsname not in used_categories]
-        chosen_cls = random.sample(not_used_categories, 1)
+        not_used_categories = [cls_id for cls_id in range(len(self.classnames)) if cls_id not in used_categories]
+        chosen_cls = random.sample(not_used_categories, 1)[0]
         forbidden_imgs = [dataset_dict['image_id']]
+        # print(f"negative chosen id: {chosen_cls}")
         return self.generate_support(chosen_cls, self.support_shot, forbidden_imgs)
 
     def generate_support(self, chosen_cls, shots, forbidden_imgs):
@@ -187,9 +207,14 @@ class DatasetMapperWithSupport:
                 support_bboxes.append(anno['bbox'])
                 assert anno['category_id'] == chosen_cls
                 support_cls.append(anno['category_id'])
+            if len(support_images) == shots:
+                break
+        assert len(support_images) == shots
         return support_images, support_bboxes, support_cls
 
-    def crop_resize_obj(self, image, box, box_mode, max_size):
+    def crop_resize_obj(self, image, box_in, box_mode, max_size):
+        box = copy.deepcopy(box_in)
+        box = [round(b) for b in box]
         if box_mode == BoxMode.XYXY_ABS:
             W = max(1, box[2] - box[0])
             H = max(1, box[3] - box[1])
@@ -209,11 +234,10 @@ class DatasetMapperWithSupport:
         assert(x2 >= x1 and y2 >= y1)
 
         ratio = max_size / float(max(W,H))
-        image = image[y1 : y2+1, x1 : y2+1]
+        image = image[y1 : y2+1, x1 : x2+1]
         # W and H
         target_size = (round(W*ratio), round(H*ratio))
 
         assert(target_size[0] == max_size or target_size[1] == max_size)
-
         return cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR)
 

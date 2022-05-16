@@ -491,7 +491,7 @@ class DefaultTrainer(SimpleTrainer):
         Overwrite it if you'd like a different data loader.
         """
         mapper = DatasetMapperWithSupport(cfg, cfg.DATASETS.TRAIN)
-        return build_detection_train_loader(cfg, mapper)
+        return build_detection_train_loader(cfg, mapper=mapper)
 
     @classmethod
     def build_test_loader(cls, cfg, dataset_name):
