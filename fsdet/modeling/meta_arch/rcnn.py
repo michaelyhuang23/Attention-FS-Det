@@ -219,7 +219,6 @@ class GeneralizedRCNN(nn.Module):
         batched_inputs is a list of dict --- outputs of DatasetMapper
         """
         self.supports, self.supports_image_sizes = self.process_supports(batched_inputs, "support_images")
-        # print(self.supports.shape)
         # self.supports.shape (Cl, N, C, H, W)
 
     def uninit_model(self):
