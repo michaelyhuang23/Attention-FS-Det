@@ -19,6 +19,6 @@ DATASETS:
   REFERENCE: ('voc_2007_trainval_base1_2shot',)
 SOLVER:
   STEPS: (12000, 16000)
-  MAX_ITER: 18000  # 17.4 epochs
+  MAX_ITER: 200000  # 17.4 epochs
   WARMUP_ITERS: 100
 OUTPUT_DIR: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1"

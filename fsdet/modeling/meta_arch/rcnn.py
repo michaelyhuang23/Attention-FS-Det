@@ -249,17 +249,7 @@ class GeneralizedRCNN(nn.Module):
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
 
-        # print("run prep")
-        with torch.no_grad():
-            support_proposals = []
-            for ci in range(len(self.supports)):
-                support_img_height = self.supports_image_sizes[ci][0]
-                support_img_width = self.supports_image_sizes[ci][1]
-                instances = Instances(image_size=(support_img_height, support_img_width))
-                instances.proposal_boxes = Boxes(torch.tensor([[0, 0, support_img_width, support_img_height]], device=self.device)).to(self.device)
-                for i in range(len(cls_support_fts)):
-                    support_proposals.append(copy.deepcopy(instances))
-
+        support_proposals = []
         all_proposals = None
         for ci, cls_support_fts in enumerate(self.supports):
             cat_features = {}
@@ -273,6 +263,13 @@ class GeneralizedRCNN(nn.Module):
                 all_proposals = proposals
             else:
                 all_proposals = [Instances.cat([prop1s, prop2s]) for prop1s, prop2s in zip(all_proposals, proposals)]
+
+            support_img_height = self.supports_image_sizes[ci][0]
+            support_img_width = self.supports_image_sizes[ci][1]
+            instances = Instances(image_size=(support_img_height, support_img_width))
+            instances.proposal_boxes = Boxes(torch.tensor([[0, 0, support_img_width, support_img_height]], device=self.device)).to(self.device)
+            for i in range(len(cls_support_fts)):
+                support_proposals.append(copy.deepcopy(instances))
 
         results, _ = self.roi_heads(images, features, all_proposals, self.supports, support_proposals, targets=None, pref_cls=None)
         # print("finish head")
