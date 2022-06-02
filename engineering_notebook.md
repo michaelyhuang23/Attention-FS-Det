@@ -35,4 +35,6 @@ I'm in the process of designing the model for the support branch. The current is
 The cropping turns out harder than expected because we store the support images as ImageList format. When it's a 2D image list, the cropping becomes a technical challenge that we don't have time for right now. So, I've turned the 2D image list into a tensor by ensuring that each support is indeed just a close-to square image as described by DANA.
 ##### Night
 Two more difficulties arose: 1. in the training, we need to remove all bbox from the annotation besides the relevant class for correct foreground background computation. 2. in the evaluation/testing, we need a data loading system that loads in the support class few shot dataset (instead of sampling it on the fly). We also need a "normal" data loading code to load the query images. 
-
+### May 13
+#### Afternoon
+The attention crux of the training code is mostly complete. I suppose, for the first variant, we will just replicate what DANA did (althought some of it maybe stupid) except that we apply sigmoid after the addition of self-attention. We also don't have positional encoding. Another dire matter is the processing of the ground-truth bounding boxes. Before passing them to the models, we should already process out the pos_gt_instances and neg_gt_instances and throw away others. Further, it should be noted that the RoI aspect is not as simple as we've thought: there's another cross_attention module before the final prediction.
