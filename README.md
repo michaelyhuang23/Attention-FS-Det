@@ -31,6 +31,18 @@ python3 -m pip install -r requirements.txt
 
 to install other dependencies. 
 
+### Configuring dataset
+
+Please place all dataset inside a directory named `datasets/`.
+
+Expected dataset structure for Pascal VOC:
+```
+VOC20{07,12}/
+  Annotations/
+  ImageSets/
+  JPEGImages/
+```
+
 ### Running the code
 
 Training:
