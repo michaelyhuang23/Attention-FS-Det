@@ -18,6 +18,7 @@ def load_filtered_voc_instances(
         dirname: Contain "Annotations", "ImageSets", "JPEGImages"
         split (str): one of "train", "test", "val", "trainval"
     """
+    print(name)
     is_shots = "shot" in name
     if is_shots:
         fileids = {}

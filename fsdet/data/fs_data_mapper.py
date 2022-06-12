@@ -11,7 +11,9 @@ import torch
 import cv2
 from fvcore.common.file_io import PathManager
 from PIL import Image
+import matplotlib.pyplot as plt
 
+import torchvision
 from detectron2.data import detection_utils as utils
 from detectron2.data import transforms as T
 from detectron2.data import get_detection_dataset_dicts, DatasetMapper
@@ -159,9 +161,10 @@ class DatasetMapperWithSupport(DatasetMapper):
                 if not self.keypoint_on:
                     anno.pop("keypoints", None)
 
-        aug_input = T.AugInput(image, sem_seg=None)
+        aug_input = T.AugInput(image)
         transforms = self.augmentations(aug_input)
-        image,_ = aug_input.image, aug_input.sem_seg
+        image = aug_input.image
+
 
         pos_cls, neg_cls = -1, -1
         if self.is_train:
@@ -192,12 +195,13 @@ class DatasetMapperWithSupport(DatasetMapper):
 
         if "annotations" in dataset_dict:
             
+            annotation_pos = copy.deepcopy(dataset_dict["annotations"]) # this is consumed
             # USER: Implement additional transformations if you have other types of data
             pos_annos = [
                 utils.transform_instance_annotations(
                     obj, transforms, image_shape
                 )
-                for obj in dataset_dict["annotations"]
+                for obj in annotation_pos
                 if obj.get("iscrowd", 0) == 0 and obj.get("category_id") == pos_cls
             ]
             pos_instances = utils.annotations_to_instances(
@@ -206,11 +210,12 @@ class DatasetMapperWithSupport(DatasetMapper):
             # Create a tight bounding box from masks, useful when image is cropped
             dataset_dict["pos_instances"] = utils.filter_empty_instances(pos_instances)
 
+            annotation_neg = copy.deepcopy(dataset_dict["annotations"])
             neg_annos = [
                 utils.transform_instance_annotations(
                     obj, transforms, image_shape
                 )
-                for obj in dataset_dict["annotations"]
+                for obj in annotation_neg
                 if obj.get("iscrowd", 0) == 0 and obj.get("category_id") == neg_cls
             ]
             neg_instances = utils.annotations_to_instances(
