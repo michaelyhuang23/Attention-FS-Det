@@ -1,6 +1,7 @@
 # Created by .ignore support plugin (hsz.mobi)
 .idea/
 .DS_Store
+.gitignore
 
 # compilation and distribution
 __pycache__
@@ -35,8 +36,4 @@ configs/*/seed*/*
 configs/*/*/seed*/*
 
 .vscode-upload.json
-<<<<<<< HEAD
 .mypy_cache
-=======
-.mypy_cache
->>>>>>> 27b37d5f7d8b61e8a4712020a2f58e45f5020fe2

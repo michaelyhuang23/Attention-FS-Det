@@ -49,7 +49,7 @@ def load_filtered_voc_instances(
             fileids = np.loadtxt(f, dtype=np.str)
 
     dicts = []
-    if is_shots:
+    if is_shots: # each anno gets its own image
         for cls, fileids_ in fileids.items():
             dicts_ = []
             for fileid in fileids_:
