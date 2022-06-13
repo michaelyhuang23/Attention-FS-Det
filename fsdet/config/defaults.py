@@ -11,7 +11,7 @@ _CC.MODEL.PROPOSAL_GENERATOR.FREEZE = False
 _CC.MODEL.ROI_HEADS.FREEZE_FEAT = False
 _CC.MODEL.ROI_HEADS.IN_SUPPORT_FEATURES = ["p5"]
 
-# choose from "FastRCNNOutputLayers" and "CosineSimOutputLayers"
+# choose from "FastRCNNOutputLayers" and "CosineSimOutputLayers" and "AgnosticRCNNOutputLayers"
 _CC.MODEL.ROI_HEADS.OUTPUT_LAYER = "AgnosticRCNNOutputLayers"
 # scale of cosine similarity (set to -1 for learnable scale)
 _CC.MODEL.ROI_HEADS.COSINE_SCALE = 20.0

@@ -490,7 +490,6 @@ class StandardROIHeads(ROIHeads):
         box_features = self.box_pooler(
             features, [x.proposal_boxes for x in proposals]
         ) # shape: (B*Bo, C, H, W)
-        print(f'box_features: {box_features.shape}')
 
         Bo = box_features.shape[0]//B
 
@@ -500,12 +499,10 @@ class StandardROIHeads(ROIHeads):
         batched_support_box_features = self.support_box_pooler(
             batched_support_features, [x.proposal_boxes for x in support_proposals]
         )
-        print(f'batched_support_box_features: {batched_support_box_features.shape}')
         batched_support_box_features = batched_support_box_features.reshape(Bs, Ns, *batched_support_box_features.shape[-3:]) 
         # shape (B, N, C, H, W)
 
         pred_class_logits = torch.zeros((B*Bo, self.num_classes+1),device=self.device)
-        pred_proposal_deltas = torch.zeros((B*Bo, self.num_classes*4),device=self.device)
         if self.training:
             batched_box_features = box_features.reshape(B, -1, *box_features.shape[-3:]) # shape: (B, Bo, C, H, W)
             all_query_support_ft = []
@@ -513,22 +510,23 @@ class StandardROIHeads(ROIHeads):
                 query_support_ft = self.cross_attention(img_box_features, support_box_features) # shape: (Bo, C, H, W)
                 all_query_support_ft.append(query_support_ft)
             query_support_fts = torch.cat(all_query_support_ft, 0) # shape (B*Bo, C, H, W)
+            #query_support_fts = torch.zeros_like(query_support_fts)
             query_support_fts = torch.cat([box_features,query_support_fts], 1)
+
             query_support_fts = self.box_head(query_support_fts)
-            logits, proposal_deltas = self.box_predictor(query_support_fts)
-            print(logits)
-            pred_class_logits[:, pref_cls:pref_cls+1] = logits
-            pred_proposal_deltas[:, pref_cls*4:(pref_cls+1)*4] = proposal_deltas
-            del query_support_fts
+            logits, pred_proposal_deltas = self.box_predictor(query_support_fts)
+            if logits.shape[1]==2:
+                pred_class_logits[:, pref_cls] = logits[:,0]
+                pred_class_logits[:, self.num_classes+1-1] = logits[:,1]
+            else:
+                pred_class_logits = logits
         else:
             for ci, support_box_features in enumerate(batched_support_box_features):
                 query_support_fts = self.cross_attention(box_features, support_box_features) # shape (B*Bo, C, H, W)
                 query_support_fts = torch.cat([box_features,query_support_fts], 1)
                 query_support_fts = self.box_head(query_support_fts)
-                logits, proposal_deltas = self.box_predictor(query_support_fts)
+                logits, pred_proposal_deltas = self.box_predictor(query_support_fts)
                 pred_class_logits[:, ci:ci+1] = logits
-                pred_proposal_deltas[:, ci*4:(ci+1)*4] = proposal_deltas
-                del query_support_fts
         del box_features
 
         outputs = FastRCNNOutputs(

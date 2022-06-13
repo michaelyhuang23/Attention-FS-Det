@@ -36,8 +36,6 @@ def crop_resize_obj(image, box_in, box_mode, max_size):
     else: 
         raise ValueError("wrong box mode")
 
-    assert(image.shape[0] >= y2 and image.shape[1] >= x2)
-    
     x2 = min(image.shape[1]-1, x2)
     y2 = min(image.shape[0]-1, y2)
 

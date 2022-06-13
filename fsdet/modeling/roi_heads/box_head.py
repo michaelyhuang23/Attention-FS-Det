@@ -76,7 +76,7 @@ class FastRCNNConvFCHead(nn.Module):
         for layer in self.conv_norm_relus:
             weight_init.c2_msra_fill(layer)
         for layer in self.fcs:
-            weight_init.c2_xavier_fill(layer)
+           weight_init.c2_xavier_fill(layer)
 
     def forward(self, x):
         for layer in self.conv_norm_relus:

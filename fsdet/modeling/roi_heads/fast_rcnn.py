@@ -284,7 +284,6 @@ class FastRCNNOutputs(object):
             gt_class_cols = box_dim * fg_gt_classes[:, None] + torch.arange(
                 box_dim, device=device
             )
-
         loss_box_reg = smooth_l1_loss(
             self.pred_proposal_deltas[fg_inds[:, None], gt_class_cols],
             gt_proposal_deltas[fg_inds],
@@ -381,7 +380,7 @@ class FastRCNNOutputLayers(nn.Module):
     """
 
     def __init__(
-        self, cfg, input_size, num_classes, cls_agnostic_bbox_reg, box_dim=4
+        self, cfg, input_size, num_classes, cls_agnostic_bbox_reg=True, box_dim=4
     ):
         """
         Args:
@@ -443,7 +442,7 @@ class AgnosticRCNNOutputLayers(nn.Module):
         self.device = torch.device(cfg.MODEL.DEVICE)
         # The prediction layer for num_classes foreground classes
         self.box_dim = box_dim
-        self.cls_score = nn.Linear(input_size, 1)
+        self.cls_score = nn.Linear(input_size, 2)
         self.bbox_pred = nn.Linear(input_size, self.box_dim)
 
         nn.init.normal_(self.cls_score.weight, std=0.01)
