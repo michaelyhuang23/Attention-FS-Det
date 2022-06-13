@@ -159,9 +159,13 @@ class GeneralizedRCNN(nn.Module):
 
         pos_supports, pos_image_sizes = self.process_supports(batched_inputs, "support_pos_images")
         neg_supports, neg_image_sizes = self.process_supports(batched_inputs, "support_neg_images")
-        # print(pos_image_sizes)
+        print(f'pos_image_sizes: {pos_image_sizes[0]}')
         # shape: (B, N, C, H, W)
 
+        print("backbone grad")
+        print(self.backbone.bottom_up.res5[2].conv3.weight.grad)
+        print("conv grad")
+        print(self.cross_attention.conv_query.weight.grad)
         for key, feature in features.items():
             # shape: (B, C, H, W)
             pos_supports_fts = self.batched_cross_attention(feature, pos_supports)
@@ -174,20 +178,22 @@ class GeneralizedRCNN(nn.Module):
         pos_proposals, pos_proposal_loss = self.rpn_forward(images, pos_features, pos_gt_instances, batched_inputs)
         neg_proposals, neg_proposal_loss = self.rpn_forward(images, neg_features, neg_gt_instances, batched_inputs)  # neg_gt_instances should be emtp empty
 
-        pos_support_proposals = []  # fake proposals: just using it to crop the entire region to 7 by 7
-        for b in range(len(pos_proposals)):
-            pos_img_height = pos_image_sizes[b][0]
-            pos_img_width = pos_image_sizes[b][1]
-            for i in range(self.support_shot):
-                instances = Instances(image_size=(pos_img_height, pos_img_width))
-                instances.proposal_boxes = Boxes(torch.tensor([[0, 0, pos_img_width, pos_img_height]])).to(self.device)
-                pos_support_proposals.append(instances)
+        all_proposals = [Instances.cat([pos_proposal, neg_proposal]) for pos_proposal, neg_proposal in zip(pos_proposals, neg_proposals)]
+        with torch.no_grad():
+            pos_support_proposals = []  # fake proposals: just using it to crop the entire region to 7 by 7
+            for b in range(len(pos_proposals)):
+                pos_img_height = pos_image_sizes[b][0]
+                pos_img_width = pos_image_sizes[b][1]
+                for i in range(self.support_shot):
+                    instances = Instances(image_size=(pos_img_height, pos_img_width))
+                    instances.proposal_boxes = Boxes(torch.tensor([[0, 0, pos_img_width, pos_img_height]])).to(self.device)
+                    pos_support_proposals.append(instances)
 
         proposal_losses = {key : pos_proposal_loss[key]+neg_proposal_loss[key] for key in pos_proposal_loss.keys()}
 
         # roi_heads should function as it should in inference: given all gt_instances, it needs to distinguish which class each proposal belongs
         _, detector_losses = self.roi_heads(  
-            images, features, pos_proposals, pos_supports, pos_support_proposals, targets=gt_instances, pref_cls=pos_cls
+            images, features, all_proposals, pos_supports, pos_support_proposals, targets=gt_instances, pref_cls=pos_cls
         )
 
         losses = {}

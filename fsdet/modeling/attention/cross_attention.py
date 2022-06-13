@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-
+import torch.nn.functional as F
 
 
 class CrossAttention(nn.Module):
@@ -39,10 +39,11 @@ class CrossAttention(nn.Module):
         CAtt = torch.tensordot(features_tr-torch.mean(features_tr), supports_k-torch.mean(supports_k), dims=1)
         # CAtt shape: (B, Hq, Wq, Hs, Ws, Ns)
         CAtt += supports_s * self.self_attn_weight
-        CAtt = torch.sigmoid(CAtt)
 
         CAtt = torch.reshape(CAtt, (CAtt.shape[0], CAtt.shape[1], CAtt.shape[2], -1))
         # CAtt shape: (B, Hq, Wq, L)
+        CAtt = F.softmax(CAtt, dim=-1)
+
         supports_n = supports.permute(2,3,0,1)
         # supports_n shape: (H, W, N, C)
         supports_n = torch.reshape(supports_n, (-1, supports_n.shape[-1]))

@@ -48,8 +48,13 @@ def crop_resize_obj(image, box_in, box_mode, max_size):
     # W and H
     target_size = (round(W*ratio), round(H*ratio))
 
+    box_in[0]=0
+    box_in[1]=0
+    box_in[2]=target_size[0]
+    box_in[3]=target_size[1]
+
     assert(target_size[0] == max_size or target_size[1] == max_size)
-    return cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR)
+    return cv2.resize(image, target_size, interpolation=cv2.INTER_LINEAR), box_in
 
 class DatasetFSProcessor:
     def __init__(self, cfg, dataset_name):
@@ -271,14 +276,15 @@ class DatasetMapperWithSupport(DatasetMapper):
             if shots - len(support_images) < len(class_annos):
                 class_annos = random.sample(class_annos, shots - len(support_images))
             for anno in class_annos:
-                image = crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
+                image, bboxes = crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
                 image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
                 support_images.append(image)
-                support_bboxes.append(anno['bbox'])
+                support_bboxes.append(bboxes)
                 assert anno['category_id'] == chosen_cls
                 support_cls.append(anno['category_id'])
             if len(support_images) == shots:
                 break
         assert len(support_images) == shots
+        
         return support_images, support_bboxes, support_cls
 

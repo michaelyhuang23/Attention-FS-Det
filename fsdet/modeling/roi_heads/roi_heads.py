@@ -346,6 +346,7 @@ class Res5ROIHeads(ROIHeads):
         """
         See :class:`ROIHeads.forward`.
         """
+        print("error")
         del images
 
         if self.training:
@@ -489,6 +490,7 @@ class StandardROIHeads(ROIHeads):
         box_features = self.box_pooler(
             features, [x.proposal_boxes for x in proposals]
         ) # shape: (B*Bo, C, H, W)
+        print(f'box_features: {box_features.shape}')
 
         Bo = box_features.shape[0]//B
 
@@ -498,6 +500,7 @@ class StandardROIHeads(ROIHeads):
         batched_support_box_features = self.support_box_pooler(
             batched_support_features, [x.proposal_boxes for x in support_proposals]
         )
+        print(f'batched_support_box_features: {batched_support_box_features.shape}')
         batched_support_box_features = batched_support_box_features.reshape(Bs, Ns, *batched_support_box_features.shape[-3:]) 
         # shape (B, N, C, H, W)
 
@@ -513,6 +516,7 @@ class StandardROIHeads(ROIHeads):
             query_support_fts = torch.cat([box_features,query_support_fts], 1)
             query_support_fts = self.box_head(query_support_fts)
             logits, proposal_deltas = self.box_predictor(query_support_fts)
+            print(logits)
             pred_class_logits[:, pref_cls:pref_cls+1] = logits
             pred_proposal_deltas[:, pref_cls*4:(pref_cls+1)*4] = proposal_deltas
             del query_support_fts

@@ -404,7 +404,7 @@ class DefaultTrainer(SimpleTrainer):
 
         if comm.is_main_process():
             # run writers in the end, so that evaluation metrics are written
-            ret.append(hooks.PeriodicWriter(self.build_writers()))
+            ret.append(hooks.PeriodicWriter(self.build_writers(),1))
         return ret
 
     def build_writers(self):
