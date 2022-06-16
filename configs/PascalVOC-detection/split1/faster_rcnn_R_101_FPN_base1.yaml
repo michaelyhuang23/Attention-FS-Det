@@ -15,10 +15,10 @@ INPUT:
     MAX_SUPPORT_OBJ_SIZE: 320
 DATASETS:
   TRAIN: ('voc_2007_trainval_base1', 'voc_2012_trainval_base1')
-  TEST: ('voc_2007_test_base1',)
-  REFERENCE: ('voc_2007_trainval_base1_2shot',)
+  TEST: ('voc_2007_test_novel1',)
+  REFERENCE: ('voc_2007_trainval_novel1_2shot',)
 SOLVER:
   STEPS: (120000, 160000)
-  MAX_ITER: 200000  # 17.4 epochs
+  MAX_ITER: 200000  # 11.7 epochs
   WARMUP_ITERS: 100
 OUTPUT_DIR: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1"

@@ -190,9 +190,10 @@ class GeneralizedRCNN(nn.Module):
         pos_proposals, pos_proposal_loss = self.rpn_forward(images, pos_features, pos_gt_instances, batched_inputs)
         neg_proposals, neg_proposal_loss = self.rpn_forward(images, neg_features, neg_gt_instances, batched_inputs)  # neg_gt_instances should be emtp empty
 
-        all_proposals = [Instances.cat([pos_proposal, neg_proposal]) for pos_proposal, neg_proposal in zip(pos_proposals, neg_proposals)]
+        #all_proposals = [Instances.cat([pos_proposal, neg_proposal]) for pos_proposal, neg_proposal in zip(pos_proposals, neg_proposals)]
         with torch.no_grad():
             pos_support_proposals = []  # fake proposals: just using it to crop the entire region to 7 by 7
+            neg_support_proposals = []
             for b in range(len(pos_proposals)):
                 pos_img_height = pos_image_sizes[b][0]
                 pos_img_width = pos_image_sizes[b][1]
@@ -201,12 +202,24 @@ class GeneralizedRCNN(nn.Module):
                     instances.proposal_boxes = Boxes(torch.tensor([[0, 0, pos_img_width, pos_img_height]])).to(self.device)
                     pos_support_proposals.append(instances)
 
+                neg_img_height = neg_image_sizes[b][0]
+                neg_img_width = neg_image_sizes[b][1]
+                for i in range(self.support_shot):
+                    instances = Instances(image_size=(neg_img_height, neg_img_width))
+                    instances.proposal_boxes = Boxes(torch.tensor([[0, 0, neg_img_width, neg_img_height]])).to(self.device)
+                    neg_support_proposals.append(instances)
+
         proposal_losses = {key : pos_proposal_loss[key]+neg_proposal_loss[key] for key in pos_proposal_loss.keys()}
 
-        # roi_heads should function as it should in inference: given all gt_instances, it needs to distinguish which class each proposal belongs
-        _, detector_losses = self.roi_heads(  
-            images, features, all_proposals, pos_supports, pos_support_proposals, targets=gt_instances, pref_cls=pos_cls
+        _, pos_detector_losses = self.roi_heads(  
+            images, features, pos_proposals, pos_supports, pos_support_proposals, targets=pos_gt_instances, pref_cls=pos_cls
         )
+
+        _, neg_detector_losses = self.roi_heads(  
+            images, features, neg_proposals, neg_supports, neg_support_proposals, targets=pos_gt_instances, pref_cls=neg_cls
+        )
+
+        detector_losses = {key : pos_detector_losses[key]+neg_detector_losses[key] for key in pos_detector_losses.keys()}
 
         losses = {}
         losses.update(detector_losses)
@@ -237,6 +250,7 @@ class GeneralizedRCNN(nn.Module):
         batched_inputs is a list of dict --- outputs of DatasetMapper
         """
         self.supports, self.supports_image_sizes = self.process_supports(batched_inputs, "support_images")
+        print(self.supports.shape)
         # self.supports.shape (Cl, N, C, H, W)
 
     def uninit_model(self):
@@ -267,8 +281,9 @@ class GeneralizedRCNN(nn.Module):
         images = self.preprocess_image(batched_inputs)
         features = self.backbone(images.tensor)
 
-        support_proposals = []
         all_proposals = None
+        all_logits = None
+        all_deltas = None
         for ci, cls_support_fts in enumerate(self.supports):
             cat_features = {}
             for key, feature in features.items():
@@ -276,20 +291,36 @@ class GeneralizedRCNN(nn.Module):
                 supports_fts = self.cross_attention(feature, cls_support_fts)
                 # shape: (B, C, H, W)
                 cat_features[key] = torch.cat([feature, supports_fts], dim=1)
-            proposals, _ = self.rpn_forward(images, cat_features, None, batched_inputs)
+            proposals, _ = self.rpn_forward(images, cat_features, None, None)
+
+            support_img_height = self.supports_image_sizes[ci][0]
+            support_img_width = self.supports_image_sizes[ci][1]
+            support_proposals = []
+            instances = Instances(image_size=(support_img_height, support_img_width))
+            instances.proposal_boxes = Boxes(torch.tensor([[0, 0, support_img_width, support_img_height]], device=self.device)).to(self.device)
+            for i in range(self.support_shot):
+                support_proposals.append(copy.deepcopy(instances))
+
+            logits, deltas = self.roi_heads(images, features, proposals, cls_support_fts[None, ...], support_proposals, targets=None, pref_cls=ci)
+            # shape: (B, Bo, *)
+            if all_logits is None:
+                all_logits = logits
+            else:
+                all_logits = torch.cat([all_logits, logits], dim=1)
+
+            if all_deltas is None:
+                all_deltas = deltas
+            else:
+                all_deltas = torch.cat([all_deltas, deltas], dim=1)
+
             if all_proposals is None:
                 all_proposals = proposals
             else:
                 all_proposals = [Instances.cat([prop1s, prop2s]) for prop1s, prop2s in zip(all_proposals, proposals)]
 
-            support_img_height = self.supports_image_sizes[ci][0]
-            support_img_width = self.supports_image_sizes[ci][1]
-            instances = Instances(image_size=(support_img_height, support_img_width))
-            instances.proposal_boxes = Boxes(torch.tensor([[0, 0, support_img_width, support_img_height]], device=self.device)).to(self.device)
-            for i in range(len(cls_support_fts)):
-                support_proposals.append(copy.deepcopy(instances))
-
-        results, _ = self.roi_heads(images, features, all_proposals, self.supports, support_proposals, targets=None, pref_cls=None)
+        all_logits = all_logits.reshape(-1, all_logits.shape[-1])
+        all_deltas = all_deltas.reshape(-1, all_deltas.shape[-1])
+        results = self.roi_heads.aggregate_results(all_logits, all_deltas, all_proposals)
         # print("finish head")
         if do_postprocess:
             processed_results = []

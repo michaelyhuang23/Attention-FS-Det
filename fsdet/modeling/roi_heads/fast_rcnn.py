@@ -113,7 +113,7 @@ def fast_rcnn_inference_single_image(
     filter_mask = scores > score_thresh  # R x K
     # R' x 2. First column contains indices of the R predictions;
     # Second column contains indices of classes.
-    filter_inds = filter_mask.nonzero()
+    filter_inds = filter_mask.nonzero(as_tuple=False)
     if num_bbox_reg_classes == 1:
         boxes = boxes[filter_inds[:, 0], 0]
     else:
@@ -202,15 +202,15 @@ class FastRCNNOutputs(object):
         bg_class_ind = self.pred_class_logits.shape[1] - 1
 
         fg_inds = (self.gt_classes >= 0) & (self.gt_classes < bg_class_ind)
-        num_fg = fg_inds.nonzero().numel()
+        num_fg = torch.nonzero(fg_inds, as_tuple=False).numel()
         fg_gt_classes = self.gt_classes[fg_inds]
         fg_pred_classes = pred_classes[fg_inds]
 
         num_false_negative = (
-            (fg_pred_classes == bg_class_ind).nonzero().numel()
+            (fg_pred_classes == bg_class_ind).nonzero(as_tuple=False).numel()
         )
-        num_accurate = (pred_classes == self.gt_classes).nonzero().numel()
-        fg_num_accurate = (fg_pred_classes == fg_gt_classes).nonzero().numel()
+        num_accurate = (pred_classes == self.gt_classes).nonzero(as_tuple=False).numel()
+        fg_num_accurate = (fg_pred_classes == fg_gt_classes).nonzero(as_tuple=False).numel()
 
         storage = get_event_storage()
         storage.put_scalar(
@@ -442,10 +442,11 @@ class AgnosticRCNNOutputLayers(nn.Module):
         self.device = torch.device(cfg.MODEL.DEVICE)
         # The prediction layer for num_classes foreground classes
         self.box_dim = box_dim
-        self.cls_score = nn.Linear(input_size, 2)
+        self.cls_score = nn.Linear(input_size, 1)
         self.bbox_pred = nn.Linear(input_size, self.box_dim)
 
         nn.init.normal_(self.cls_score.weight, std=0.01)
+        nn.init.constant_(self.cls_score.weight, 0)
         nn.init.normal_(self.bbox_pred.weight, std=0.001)
         for l in [self.cls_score, self.bbox_pred]:
             nn.init.constant_(l.bias, 0)

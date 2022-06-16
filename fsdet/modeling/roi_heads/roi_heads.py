@@ -467,8 +467,7 @@ class StandardROIHeads(ROIHeads):
             losses = self._forward_box(features_list, proposals, support_features_list, support_proposals, pref_cls)
             return proposals, losses
         else:
-            pred_instances = self._forward_box(features_list, proposals, support_features_list, support_proposals, pref_cls)
-            return pred_instances, {}
+            return self._forward_box(features_list, proposals, support_features_list, support_proposals, pref_cls)
 
     def _forward_box(self, features, proposals, batched_support_features, support_proposals, pref_cls=None):
         """
@@ -502,7 +501,8 @@ class StandardROIHeads(ROIHeads):
         batched_support_box_features = batched_support_box_features.reshape(Bs, Ns, *batched_support_box_features.shape[-3:]) 
         # shape (B, N, C, H, W)
 
-        pred_class_logits = torch.zeros((B*Bo, self.num_classes+1),device=self.device)
+        pred_class_logits = torch.zeros((B*Bo, self.num_classes+1),device=self.device).float()
+        pred_class_logits[:, self.num_classes+1-1]=0.01 # we set this so that not detecting pref_class default to background instead of some other class
         if self.training:
             batched_box_features = box_features.reshape(B, -1, *box_features.shape[-3:]) # shape: (B, Bo, C, H, W)
             all_query_support_ft = []
@@ -515,35 +515,49 @@ class StandardROIHeads(ROIHeads):
 
             query_support_fts = self.box_head(query_support_fts)
             logits, pred_proposal_deltas = self.box_predictor(query_support_fts)
-            if logits.shape[1]==2:
+            if logits.shape[1]==1:
                 pred_class_logits[:, pref_cls] = logits[:,0]
-                pred_class_logits[:, self.num_classes+1-1] = logits[:,1]
             else:
                 pred_class_logits = logits
         else:
-            for ci, support_box_features in enumerate(batched_support_box_features):
-                query_support_fts = self.cross_attention(box_features, support_box_features) # shape (B*Bo, C, H, W)
-                query_support_fts = torch.cat([box_features,query_support_fts], 1)
-                query_support_fts = self.box_head(query_support_fts)
-                logits, pred_proposal_deltas = self.box_predictor(query_support_fts)
-                pred_class_logits[:, ci:ci+1] = logits
+            support_box_features = batched_support_box_features[0]
+            query_support_fts = self.cross_attention(box_features, support_box_features) # shape (B*Bo, C, H, W)
+            query_support_fts = torch.cat([box_features,query_support_fts], 1)
+            query_support_fts = self.box_head(query_support_fts)
+            logits, pred_proposal_deltas = self.box_predictor(query_support_fts)
+            if logits.shape[1]==1:
+                pred_class_logits[:, pref_cls] = logits[:,0]
+            else:
+                pred_class_logits = logits
         del box_features
 
+        if self.training:
+            outputs = FastRCNNOutputs(
+                self.box2box_transform,
+                pred_class_logits,
+                pred_proposal_deltas,
+                proposals,
+                self.smooth_l1_beta,
+                pref_cls,
+                self.device,
+            )
+            return outputs.losses()
+        else:
+            return pred_class_logits.reshape(B, Bo, self.num_classes+1), pred_proposal_deltas.reshape(B, Bo, pred_proposal_deltas.shape[-1])
+        
+    def aggregate_results(self, pred_class_logits, pred_proposal_deltas, proposals):
         outputs = FastRCNNOutputs(
             self.box2box_transform,
             pred_class_logits,
             pred_proposal_deltas,
             proposals,
             self.smooth_l1_beta,
-            pref_cls,
+            None,
             self.device,
         )
-        if self.training:
-            return outputs.losses()
-        else:
-            pred_instances, _ = outputs.inference(
-                self.test_score_thresh,
-                self.test_nms_thresh,
-                self.test_detections_per_img,
-            )
-            return pred_instances
+        pred_instances, _ = outputs.inference(
+            self.test_score_thresh,
+            self.test_nms_thresh,
+            self.test_detections_per_img,
+        )
+        return pred_instances

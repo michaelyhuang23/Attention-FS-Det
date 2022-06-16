@@ -85,7 +85,7 @@ class DatasetFSProcessor:
         for img_dict in dataset_dicts:
             image_orig = utils.read_image(img_dict['file_name'], format=self.img_format)
             anno = img_dict['annotations'][0]
-            image = crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
+            image, anno['bbox'] = crop_resize_obj(image_orig, anno['bbox'], anno['bbox_mode'], self.max_obj_size)
             image = torch.as_tensor(np.ascontiguousarray(image.transpose(2, 0, 1)))
             self.support_dataset[anno['category_id']]['support_images'].append(image)
 
