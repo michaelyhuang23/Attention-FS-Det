@@ -159,6 +159,29 @@ class GeneralizedRCNN(nn.Module):
 
         pos_supports, pos_image_sizes = self.process_supports(batched_inputs, "support_pos_images")
         neg_supports, neg_image_sizes = self.process_supports(batched_inputs, "support_neg_images")
+
+        if len(pos_supports.shape)!=5: 
+            print(pos_supports.shape)
+            continue
+        B, N, C, H, W = pos_supports.shape
+        if N!=self.support_shot: 
+            print(pos_supports.shape)
+            continue
+        if C==0 or H==0 or W==0: 
+            print(pos_supports.shape)
+            continue
+
+        if len(neg_supports.shape)!=5: 
+            print(neg_supports.shape)
+            continue
+        B, N, C, H, W = neg_supports.shape
+        if N!=self.support_shot: 
+            print(neg_supports.shape)
+            continue
+        if C==0 or H==0 or W==0: 
+            print(neg_supports.shape)
+            continue
+
         # print(f'pos_image_sizes: {pos_image_sizes[0]}')
         # # shape: (B, N, C, H, W)
         # print("backbone grad")
