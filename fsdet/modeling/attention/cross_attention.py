@@ -24,8 +24,16 @@ class CrossAttention(nn.Module):
         if len(features.shape)==3:
             features = features[None,...]
         features_tr = self.conv_query(features)
-        supports_s = torch.squeeze(self.conv_self_support_attn(supports))
+        if len(supports.shape)!=4:
+            print("bad thing 1")
+            print(supports.shape)
+            print(query.shape)
+        supports_s = self.conv_self_support_attn(supports)[:, 0, :, :]
         # self_supports shape: (N, H, W)
+        if len(supports_s.shape)!=3:
+            print("bad thing 2")
+            print(supports_s.shape)
+            print(supports.shape)
         supports_s = supports_s.permute(1,2,0)[None,None,None,...]
 
         # supports shape: (N, C, H, W)
