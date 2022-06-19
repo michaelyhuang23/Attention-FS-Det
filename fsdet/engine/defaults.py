@@ -224,6 +224,14 @@ class DefaultPredictor:
         self.input_format = cfg.INPUT.FORMAT
         assert self.input_format in ["RGB", "BGR"], self.input_format
 
+    def init_model(self, cfg):
+        """
+        Returns model with parameters initialized
+        """
+        processor = DatasetFSProcessor(cfg, cfg.DATASETS.REFERENCE)
+        dataset = processor.get_processed_dataset()
+        self.model.init_model(dataset)
+    
     @torch.no_grad()
     def __call__(self, original_image):
         """
