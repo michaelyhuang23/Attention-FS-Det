@@ -1,7 +1,9 @@
 import logging
 import copy
+import matplotlib.pyplot as plt
 
 import torch
+import torchvision
 from detectron2.modeling.backbone import build_backbone
 from detectron2.modeling.postprocessing import detector_postprocess
 from detectron2.modeling.proposal_generator import build_proposal_generator
@@ -154,64 +156,32 @@ class GeneralizedRCNN(nn.Module):
             gt_instances = None
 
         features = self.backbone(images.tensor)
-        # print(features.keys())
         pos_features, neg_features = {}, {}
 
         pos_supports, pos_image_sizes = self.process_supports(batched_inputs, "support_pos_images")
         neg_supports, neg_image_sizes = self.process_supports(batched_inputs, "support_neg_images")
 
-        if len(pos_supports.shape)!=5: 
-            print(pos_supports.shape)
-            return {'loss_cls': 0.1711,  'loss_box_reg': 0.1239 , 'loss_rpn_cls': 0.1335,  'loss_rpn_loc': 0.01615}
-        B, N, C, H, W = pos_supports.shape
-        if N!=self.support_shot: 
-            print(pos_supports.shape)
-            return {'loss_cls': 0.1711,  'loss_box_reg': 0.1239 , 'loss_rpn_cls': 0.1335,  'loss_rpn_loc': 0.01615}
-        if C==0 or H==0 or W==0: 
-            print(pos_supports.shape)
-            return {'loss_cls': 0.1711,  'loss_box_reg': 0.1239 , 'loss_rpn_cls': 0.1335,  'loss_rpn_loc': 0.01615}
-
-        if len(neg_supports.shape)!=5: 
-            print(neg_supports.shape)
-            return {'loss_cls': 0.1711,  'loss_box_reg': 0.1239 , 'loss_rpn_cls': 0.1335,  'loss_rpn_loc': 0.01615}
-        B, N, C, H, W = neg_supports.shape
-        if N!=self.support_shot: 
-            print(neg_supports.shape)
-            return {'loss_cls': 0.1711,  'loss_box_reg': 0.1239 , 'loss_rpn_cls': 0.1335,  'loss_rpn_loc': 0.01615}
-        if C==0 or H==0 or W==0: 
-            print(neg_supports.shape)
-            return {'loss_cls': 0.1711,  'loss_box_reg': 0.1239 , 'loss_rpn_cls': 0.1335,  'loss_rpn_loc': 0.01615}
-
-        # print(f'pos_image_sizes: {pos_image_sizes[0]}')
-        # # shape: (B, N, C, H, W)
-        # print("backbone grad")
-        # print(self.backbone.bottom_up.res5[2].conv3.weight.grad)
-        # print("fpn grad")
-        # print(self.backbone.fpn_output5.weight.grad)
-        # print("conv grad")
-        # print(self.cross_attention.conv_query.weight.grad)
-        # print("rpn grad")
-        # print(self.proposal_generator.rpn_head.conv.weight.grad)
-        # print("conv grad 2")
-        # print(self.roi_heads.cross_attention.conv_query.weight.grad)
-        # print("roi grad")
-        # print(self.roi_heads.box_head.fc1.weight.grad)
-        # print(self.roi_heads.box_head.fc2.weight.grad)
-        # print("cls grad")
-        # print(self.roi_heads.box_predictor.cls_score.weight.grad)
-        # print("regress grad")
-        # print(self.roi_heads.box_predictor.bbox_pred.weight.grad)
         for key, feature in features.items():
             # shape: (B, C, H, W)
             pos_supports_fts = self.batched_cross_attention(feature, pos_supports)
             neg_supports_fts = self.batched_cross_attention(feature, neg_supports)
             # shape: (B, C, H, W)
-            # print(f'pos_supports_fts shape: {pos_supports_fts.shape}')
             pos_features[key] = torch.cat([feature, pos_supports_fts], dim=1)
             neg_features[key] = torch.cat([feature, neg_supports_fts], dim=1)
         
         pos_proposals, pos_proposal_loss = self.rpn_forward(images, pos_features, pos_gt_instances, batched_inputs)
+
+        # print(f'pos_cls {pos_cls}')
+        # img = torchvision.utils.draw_bounding_boxes(torch.tensor(torch.clone(batched_inputs[0]['image'].cpu())), pos_proposals[0].proposal_boxes[:10].tensor.cpu())
+        # plt.imshow(img.numpy().transpose(1,2,0))
+        # plt.show()
+
         neg_proposals, neg_proposal_loss = self.rpn_forward(images, neg_features, neg_gt_instances, batched_inputs)  # neg_gt_instances should be emtp empty
+
+        # print(f'neg_cls {neg_cls}')
+        # img = torchvision.utils.draw_bounding_boxes(torch.tensor(torch.clone(batched_inputs[0]['image'].cpu())), neg_proposals[0].proposal_boxes[:10].tensor.cpu())
+        # plt.imshow(img.numpy().transpose(1,2,0))
+        # plt.show()
 
         #all_proposals = [Instances.cat([pos_proposal, neg_proposal]) for pos_proposal, neg_proposal in zip(pos_proposals, neg_proposals)]
         with torch.no_grad():
@@ -305,6 +275,7 @@ class GeneralizedRCNN(nn.Module):
         features = self.backbone(images.tensor)
 
         all_proposals = None
+        all_classes = None
         all_logits = None
         all_deltas = None
         for ci, cls_support_fts in enumerate(self.supports):
@@ -324,8 +295,19 @@ class GeneralizedRCNN(nn.Module):
             for i in range(self.support_shot):
                 support_proposals.append(copy.deepcopy(instances))
 
-            logits, deltas = self.roi_heads(images, features, proposals, cls_support_fts[None, ...], support_proposals, targets=None, pref_cls=ci)
+            # print(f'class: {ci}')
+            # img = torchvision.utils.draw_bounding_boxes(torch.tensor(torch.clone(batched_inputs[0]['image'].cpu())), proposals[0].proposal_boxes[:10].tensor.cpu())
+            # plt.imshow(img.numpy().transpose(1,2,0))
+            # plt.show()
+
+
+            classes, logits, deltas = self.roi_heads(images, features, proposals, cls_support_fts[None, ...], support_proposals, targets=None, pref_cls=ci)
             # shape: (B, Bo, *)
+            if all_classes is None:
+                all_classes = classes
+            else:
+                all_classes = torch.cat([all_classes, classes], dim=1)
+
             if all_logits is None:
                 all_logits = logits
             else:
@@ -341,9 +323,12 @@ class GeneralizedRCNN(nn.Module):
             else:
                 all_proposals = [Instances.cat([prop1s, prop2s]) for prop1s, prop2s in zip(all_proposals, proposals)]
 
+            #print(f'class: {ci}')
+            #print(torch.sort(logits[0,:,ci], descending=True)[0][:10])
+        all_classes = all_classes.reshape(-1)
         all_logits = all_logits.reshape(-1, all_logits.shape[-1])
         all_deltas = all_deltas.reshape(-1, all_deltas.shape[-1])
-        results = self.roi_heads.aggregate_results(all_logits, all_deltas, all_proposals)
+        results = self.roi_heads.aggregate_results(all_classes, all_logits, all_deltas, all_proposals)
         # print("finish head")
         if do_postprocess:
             processed_results = []
@@ -377,6 +362,9 @@ class GeneralizedRCNN(nn.Module):
 
 
     def preprocess_support_image(self, batched_inputs, img_key : str):
+        # imgs = [[img for img in x[img_key]] for x in batched_inputs]
+        # plt.imshow(imgs[0][0].permute(1, 2, 0))
+        # plt.show()
         support_images = [[self.normalizer(img.to(self.device)) for img in x[img_key]] for x in batched_inputs]
         support_images = [ImageList.from_tensors(imgs, self.backbone.size_divisibility).tensor for imgs in support_images]
         support_images = ImageList.from_tensors(support_images, self.backbone.size_divisibility)

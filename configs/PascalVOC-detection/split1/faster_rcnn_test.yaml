@@ -1,0 +1,27 @@
+_BASE_: "../../Base-RCNN-FPN.yaml"
+MODEL:
+  WEIGHTS: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1/model_0169999.pth"
+  MASK_ON: False
+  RESNETS:
+    DEPTH: 101
+  ROI_HEADS:
+    NUM_CLASSES: 15
+INPUT:
+  MIN_SIZE_TRAIN: (480, 512, 544, 576, 608, 640, 672, 704, 736, 768, 800)
+  MIN_SIZE_TEST: 800
+  FS:
+    SUPPORT_WAY: 2
+    SUPPORT_SHOT: 2
+    MAX_SUPPORT_OBJ_SIZE: 320
+DATASETS:
+  TRAIN: ('voc_2007_test_novel1',)
+  TEST: ('voc_2007_test_novel1',)
+  REFERENCE: ('voc_2007_trainval_novel1_2shot',)
+SOLVER:
+  STEPS: (120000, 160000)
+  MAX_ITER: 200000  # 11.7 epochs
+  WARMUP_ITERS: 100
+  BASE_LR: 0.0000000025
+TEST:
+  EVAL_PERIOD: 100
+OUTPUT_DIR: "checkpoints/voc/faster_rcnn/faster_rcnn_R_101_FPN_base1"

@@ -22,6 +22,16 @@ from detectron2.structures import BoxMode
 import pandas as pd
 from detectron2.data.catalog import MetadataCatalog
 
+def is_large(anno):
+    box = anno['bbox']
+    if anno['bbox_mode'] == BoxMode.XYXY_ABS:
+        W = max(1, box[2] - box[0])
+        H = max(1, box[3] - box[1])
+    elif box_mode['bbox_mode'] == BoxMode.XYWH_ABS:
+        W = max(1, box[2])
+        H = max(1, box[3])
+    return W*H>1024
+
 def crop_resize_obj(image, box_in, box_mode, max_size):
     box = copy.deepcopy(box_in)
     box = [round(b) for b in box]
@@ -268,6 +278,7 @@ class DatasetMapperWithSupport(DatasetMapper):
         for img_dict in random.sample(self.support_dataset,len(self.support_dataset)):
             if img_dict['image_id'] in forbidden_imgs : continue
             class_annos = [anno for anno in img_dict['annotations'] if anno['category_id'] == chosen_cls]
+            class_annos = [anno for anno in class_annos if is_large(anno)]
             if len(class_annos) == 0 : continue
             forbidden_imgs.append(img_dict['image_id'])
             image_orig = utils.read_image(img_dict['file_name'], format=self.img_format)
